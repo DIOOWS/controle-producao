@@ -50,6 +50,13 @@ def salvar_planilha(planilha, aba, df):
     except Exception as e:
         st.error(f"Erro ao salvar planilha: {e}")
 
+# ===============================
+# INICIALIZAÇÃO DOS DADOS
+# ===============================
+planilha = conectar_sheets()
+producao, desperdicio = carregar_planilhas(planilha)
+
+
 
 # ===============================
 # FUNÇÕES AUXILIARES
