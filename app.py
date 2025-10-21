@@ -1,8 +1,13 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-from st_gsheets_connection import GSheetsConnection
 import plotly.express as px
+
+try:
+    from st_gsheets_connection import GSheetsConnection
+except ModuleNotFoundError:
+    from streamlit_gsheets import GSheetsConnection
+
 
 st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon="🏭", layout="wide")
 

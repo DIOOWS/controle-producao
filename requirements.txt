@@ -1,4 +1,5 @@
 streamlit
 pandas
 plotly
-st-gsheets-connection
+git+https://github.com/streamlit/st-gsheets-connection.git
+
