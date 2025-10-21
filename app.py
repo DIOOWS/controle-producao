@@ -2,42 +2,54 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
-
-try:
-    from st_gsheets_connection import GSheetsConnection
-except ModuleNotFoundError:
-    from streamlit_gsheets import GSheetsConnection
-
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon="🏭", layout="wide")
 
 # ===============================
-# CONEXÃO COM GOOGLE SHEETS
+# CONEXÃO DIRETA COM GOOGLE SHEETS (via gspread)
 # ===============================
-conn = st.connection("gsheets", type=GSheetsConnection)
+def conectar_sheets():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name("credenciais.json", scope)
+    client = gspread.authorize(creds)
+    planilha = client.open_by_key("1U3XbcY2uGBNrcsQZDAEuo4O-9yH2-FuMUctsb11a69E")
+    return planilha
 
-def carregar_planilhas():
-    """Carrega as planilhas de produção e desperdício."""
+def carregar_planilhas(planilha):
+    """Carrega as abas de produção e desperdício do Sheets."""
     try:
-        producao = conn.read(worksheet="producao", ttl=5)
-        desperdicio = conn.read(worksheet="desperdicio", ttl=5)
-        if producao is None or producao.empty:
+        producao_ws = planilha.worksheet("producao")
+        desperdicio_ws = planilha.worksheet("desperdicio")
+
+        producao = pd.DataFrame(producao_ws.get_all_records())
+        desperdicio = pd.DataFrame(desperdicio_ws.get_all_records())
+
+        if producao.empty:
             producao = pd.DataFrame(columns=[
                 "id","data_producao","produto","cor",
                 "quantidade_produzida","data_remarcacao","data_validade"
             ])
-        if desperdicio is None or desperdicio.empty:
+        if desperdicio.empty:
             desperdicio = pd.DataFrame(columns=[
                 "id","data_desperdicio","produto","cor",
                 "quantidade_desperdicada","motivo","id_producao","data_producao"
             ])
         return producao, desperdicio
-    except Exception:
+    except Exception as e:
+        st.error(f"Erro ao carregar planilhas: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
-def salvar_planilha(nome, df):
-    """Atualiza a planilha correspondente no Google Sheets."""
-    conn.update(worksheet=nome, data=df)
+def salvar_planilha(planilha, aba, df):
+    """Atualiza uma aba específica da planilha."""
+    try:
+        ws = planilha.worksheet(aba)
+        ws.clear()
+        ws.update([df.columns.values.tolist()] + df.values.tolist())
+    except Exception as e:
+        st.error(f"Erro ao salvar planilha: {e}")
+
 
 # ===============================
 # FUNÇÕES AUXILIARES

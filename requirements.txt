@@ -1,5 +1,5 @@
 streamlit
 pandas
 plotly
-git+https://github.com/streamlit/st-gsheets-connection.git
-
+gspread
+oauth2client
