@@ -3,24 +3,20 @@ import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon="🏭", layout="wide")
 
 # ===============================
-# CONEXÃO DIRETA COM GOOGLE SHEETS (via gspread)
+# CONEXÃO DIRETA COM GOOGLE SHEETS (via gspread + st.secrets)
 # ===============================
 def conectar_sheets():
-    import json
-    from google.oauth2.service_account import Credentials
-
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = st.secrets["connections"]["gsheets"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(creds)
     planilha = client.open_by_key("1U3XbcY2uGBNrcsQZDAEuo4O-9yH2-FuMUctsb11a69E")
     return planilha
-
 
 def carregar_planilhas(planilha):
     """Carrega as abas de produção e desperdício do Sheets."""
@@ -60,6 +56,7 @@ def salvar_planilha(planilha, aba, df):
 # ===============================
 planilha = conectar_sheets()
 producao, desperdicio = carregar_planilhas(planilha)
+
 
 
 
