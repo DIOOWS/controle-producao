@@ -11,11 +11,16 @@ st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon
 # CONEXÃO DIRETA COM GOOGLE SHEETS (via gspread)
 # ===============================
 def conectar_sheets():
+    import json
+    from google.oauth2.service_account import Credentials
+
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credenciais.json", scope)
+    creds_dict = st.secrets["connections"]["gsheets"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(creds)
     planilha = client.open_by_key("1U3XbcY2uGBNrcsQZDAEuo4O-9yH2-FuMUctsb11a69E")
     return planilha
+
 
 def carregar_planilhas(planilha):
     """Carrega as abas de produção e desperdício do Sheets."""
