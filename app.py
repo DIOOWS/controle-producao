@@ -11,9 +11,31 @@ import os
 # ====================================
 st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon="🏭", layout="wide")
 
-DEBUG_MODE = "streamlit_app_name" in os.environ or st.sidebar.checkbox("🧩 Ativar modo debug (manual)")
-if DEBUG_MODE:
-    st.sidebar.warning("🧩 Modo Debug Ativo — Logs e mensagens visuais habilitados.")
+# ====================================
+# LOGIN DE USUÁRIOS
+# ====================================
+USUARIOS = {
+    "admin": {"senha": "1234", "nome": "Administrador"},
+    "producao": {"senha": "senha123", "nome": "Equipe de Produção"}
+}
+
+def login_page():
+    st.title("🔐 Login - Controle de Produção")
+    usuario = st.text_input("Usuário:")
+    senha = st.text_input("Senha:", type="password")
+
+    if st.button("Entrar"):
+        if usuario in USUARIOS and USUARIOS[usuario]["senha"] == senha:
+            st.session_state["usuario"] = usuario
+            st.session_state["autenticado"] = True
+            st.success("✅ Login realizado com sucesso!")
+            st.experimental_rerun()
+        else:
+            st.error("Usuário ou senha incorretos.")
+
+if "autenticado" not in st.session_state or not st.session_state["autenticado"]:
+    login_page()
+    st.stop()
 
 # ====================================
 # CONEXÃO COM GOOGLE SHEETS
@@ -25,11 +47,9 @@ def conectar_sheets():
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         planilha = client.open_by_key("1U3XbcY2uGBNrcsQZDAEuo4O-9yH2-FuMUctsb11a69E")
-        if DEBUG_MODE:
-            st.success("✅ Conectado ao Google Sheets com sucesso.")
         return planilha
     except Exception as e:
-        st.error(f"❌ Erro na conexão: {e}")
+        st.error(f"❌ Erro na conexão com Google Sheets: {e}")
         return None
 
 def carregar_planilhas(planilha):
@@ -50,14 +70,9 @@ def salvar_planilha(planilha, aba, df):
         ws = planilha.worksheet(aba)
         ws.clear()
         ws.update([df.columns.values.tolist()] + df.values.tolist())
-        if DEBUG_MODE:
-            st.success(f"✅ Dados atualizados em '{aba}' ({len(df)} registros).")
     except Exception as e:
         st.error(f"❌ Erro ao salvar na aba {aba}: {e}")
 
-# ====================================
-# INICIALIZAÇÃO
-# ====================================
 planilha = conectar_sheets()
 if planilha is None:
     st.stop()
@@ -68,6 +83,18 @@ producao, desperdicio = carregar_planilhas(planilha)
 # ====================================
 def cor_do_dia(dia_semana):
     return ["azul","verde","amarelo","laranja","vermelho","prata","dourado"][dia_semana]
+
+def dia_da_cor(cor):
+    mapa = {
+        "azul": "segunda-feira",
+        "verde": "terça-feira",
+        "amarelo": "quarta-feira",
+        "laranja": "quinta-feira",
+        "vermelho": "sexta-feira",
+        "prata": "sábado",
+        "dourado": "domingo"
+    }
+    return mapa.get(cor.lower(), "Desconhecido")
 
 def emoji_cor(cor):
     mapa = {"azul":"🟦","verde":"🟩","amarelo":"🟨","laranja":"🟧","vermelho":"🟥","prata":"⬜","dourado":"🟨✨"}
@@ -92,13 +119,13 @@ def gerar_alertas(producao):
 # INTERFACE PRINCIPAL
 # ====================================
 st.title("🏭 Controle de Produção e Desperdício")
+st.sidebar.success(f"👋 Bem-vindo, {USUARIOS[st.session_state['usuario']]['nome']}")
 
 menu = st.sidebar.radio(
     "Menu principal:",
     ["📊 Painel de Status", "Registrar Produção 🧁", "Registrar Desperdício ⚠️", "Relatórios 📈", "Zerar sistema 🧹"]
 )
 
-# ALERTAS NA LATERAL
 st.sidebar.markdown("### 🔔 Alertas de Validade")
 for alerta in gerar_alertas(producao):
     st.sidebar.warning(alerta)
@@ -117,10 +144,11 @@ if menu == "📊 Painel de Status":
         producao["status"] = producao["dias_restantes"].apply(
             lambda d: "✅ Dentro do prazo" if d > 2 else ("⚠️ Perto do vencimento" if 0 < d <= 2 else "❌ Vencido")
         )
-        st.dataframe(producao[["produto","cor","data_producao","data_validade","dias_restantes","status"]])
+        producao["dia_cor"] = producao["cor"].apply(dia_da_cor)
+        st.dataframe(producao[["produto","cor","dia_cor","data_producao","data_validade","dias_restantes","status"]])
 
 # ====================================
-# REGISTRO DE PRODUÇÃO
+# REGISTRAR PRODUÇÃO
 # ====================================
 elif menu == "Registrar Produção 🧁":
     st.header("🧁 Registrar Produção")
@@ -144,56 +172,59 @@ elif menu == "Registrar Produção 🧁":
             }
             producao = pd.concat([producao, pd.DataFrame([novo])], ignore_index=True)
             salvar_planilha(planilha, "producao", producao)
-            st.success(f"✅ Produção registrada com cor {emoji_cor(cor)} {cor.upper()}.")
+            st.success(f"✅ Produção registrada com cor {emoji_cor(cor)} {cor.upper()} ({dia_da_cor(cor)}).")
 
 # ====================================
-# REGISTRO DE DESPERDÍCIO
+# REGISTRAR DESPERDÍCIO AVANÇADO
 # ====================================
 elif menu == "Registrar Desperdício ⚠️":
     st.header("⚠️ Registrar Desperdício")
     produto = st.text_input("Produto:")
-    sugestao_cor = sugestao_id = sugestao_data = ""
 
     if produto.strip():
-        prod_rel = producao[producao["produto"].str.lower().str.contains(produto.lower(), na=False)]
-        if not prod_rel.empty:
-            ult = prod_rel.iloc[-1]
-            sugestao_cor, sugestao_id, sugestao_data = ult["cor"], ult["id"], ult["data_producao"]
-            st.info(f"🟢 Sugerido: Cor {emoji_cor(sugestao_cor)} {sugestao_cor.upper()}, Lote {sugestao_id}, Produzido em {sugestao_data}")
-        else:
-            st.warning("❌ Nenhuma produção encontrada para este produto.")
+        hoje = datetime.now().date()
+        disponiveis = producao[
+            (producao["produto"].str.contains(produto, case=False, na=False)) &
+            (pd.to_datetime(producao["data_validade"]).dt.date >= hoje)
+        ]
 
-    quantidade = st.number_input("Quantidade desperdiçada:", min_value=1, step=1)
-    motivo = st.text_area("Motivo:")
-    if st.button("💾 Salvar Desperdício"):
-        if produto.strip() == "" or sugestao_cor == "":
-            st.error("Preencha o produto corretamente.")
+        if disponiveis.empty:
+            st.warning("❌ Nenhum lote válido encontrado.")
         else:
-            novo = {
-                "id": len(desperdicio) + 1,
-                "data_desperdicio": datetime.now().strftime("%Y-%m-%d"),
-                "produto": produto.strip(),
-                "cor": sugestao_cor,
-                "quantidade_desperdicada": quantidade,
-                "motivo": motivo,
-                "id_producao": sugestao_id,
-                "data_producao": sugestao_data
-            }
-            desperdicio = pd.concat([desperdicio, pd.DataFrame([novo])], ignore_index=True)
-            salvar_planilha(planilha, "desperdicio", desperdicio)
-            st.success(f"✅ Desperdício registrado ({emoji_cor(sugestao_cor)} {sugestao_cor.upper()}).")
+            disponiveis["dia_cor"] = disponiveis["cor"].apply(dia_da_cor)
+            st.dataframe(disponiveis[["id","produto","cor","dia_cor","data_producao","data_validade","quantidade_produzida"]])
+            lote = st.number_input("Selecione o ID do lote:", min_value=1, step=1)
+
+            if lote in disponiveis["id"].values:
+                registro = disponiveis[disponiveis["id"] == lote].iloc[0]
+                st.info(f"🟢 Lote {lote} selecionado: Cor {emoji_cor(registro['cor'])} {registro['cor'].upper()} ({dia_da_cor(registro['cor'])}), Produzido em {registro['data_producao']}")
+                quantidade = st.number_input("Quantidade desperdiçada:", min_value=1, step=1)
+                motivo = st.text_area("Motivo:")
+                if st.button("💾 Salvar Desperdício"):
+                    novo = {
+                        "id": len(desperdicio) + 1,
+                        "data_desperdicio": datetime.now().strftime("%Y-%m-%d"),
+                        "produto": registro["produto"],
+                        "cor": registro["cor"],
+                        "quantidade_desperdicada": quantidade,
+                        "motivo": motivo,
+                        "id_producao": registro["id"],
+                        "data_producao": registro["data_producao"]
+                    }
+                    desperdicio = pd.concat([desperdicio, pd.DataFrame([novo])], ignore_index=True)
+                    salvar_planilha(planilha, "desperdicio", desperdicio)
+                    st.success(f"✅ Desperdício registrado ({emoji_cor(registro['cor'])} {registro['cor'].upper()} - {dia_da_cor(registro['cor'])}).")
 
 # ====================================
-# RELATÓRIOS COM FILTRO DE DATA
+# RELATÓRIOS
 # ====================================
 elif menu == "Relatórios 📈":
     st.header("📈 Relatórios")
     if producao.empty:
         st.warning("Nenhum dado disponível.")
     else:
-        col1, col2 = st.columns(2)
-        inicio = col1.date_input("Data inicial", datetime.now().date() - timedelta(days=7))
-        fim = col2.date_input("Data final", datetime.now().date())
+        inicio = st.date_input("Data inicial", datetime.now().date() - timedelta(days=7))
+        fim = st.date_input("Data final", datetime.now().date())
 
         prod_filtro = producao[pd.to_datetime(producao["data_producao"]).dt.date.between(inicio, fim)]
         disp_filtro = desperdicio[pd.to_datetime(desperdicio["data_desperdicio"]).dt.date.between(inicio, fim)]
@@ -207,13 +238,13 @@ elif menu == "Relatórios 📈":
         c2.metric("Desperdiçado", int(total_disp))
         c3.metric("% Desperdício", f"{perc:.1f}%")
 
-        st.subheader("📊 Desperdício por Produto e Cor")
-        resumo_prod = prod_filtro.groupby(["cor","produto"])["quantidade_produzida"].sum().reset_index()
+        prod_filtro["dia_cor"] = prod_filtro["cor"].apply(dia_da_cor)
+        resumo_prod = prod_filtro.groupby(["cor","dia_cor","produto"])["quantidade_produzida"].sum().reset_index()
         resumo_disp = disp_filtro.groupby(["cor","produto"])["quantidade_desperdicada"].sum().reset_index()
         resultado = pd.merge(resumo_prod, resumo_disp, on=["cor","produto"], how="left").fillna(0)
         resultado["% desperdício"] = (resultado["quantidade_desperdicada"] / resultado["quantidade_produzida"]) * 100
         st.dataframe(resultado)
-        fig = px.bar(resultado, x="produto", y="% desperdício", color="cor", text="% desperdício")
+        fig = px.bar(resultado, x="produto", y="% desperdício", color="dia_cor", text="% desperdício", title="Desperdício por Produto e Dia da Cor")
         fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
         st.plotly_chart(fig, use_container_width=True)
 
@@ -238,4 +269,4 @@ elif menu == "Zerar sistema 🧹":
 # RODAPÉ
 # ====================================
 st.markdown("---")
-st.caption("📘 Sistema de Controle de Produção e Desperdício - Versão 1.5 | Desenvolvido por Diogo Silva 💼")
+st.caption("📘 Sistema de Controle de Produção e Desperdício - Versão 1.6 | Desenvolvido por Diogo Silva 💼")
