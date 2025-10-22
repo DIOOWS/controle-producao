@@ -44,7 +44,6 @@ def carregar_planilhas(planilha):
 
 
 def salvar_planilha_segura(planilha, aba, df):
-    """Salva o DataFrame inteiro (uso apenas quando necessário)."""
     try:
         ws = planilha.worksheet(aba)
         ws.clear()
@@ -55,12 +54,21 @@ def salvar_planilha_segura(planilha, aba, df):
 
 
 def atualizar_linha(planilha, aba, linha, dados):
-    """Atualiza apenas uma linha específica na planilha sem apagar o resto."""
+    """Atualiza apenas uma linha específica, convertendo datas para strings."""
     try:
+        dados_convertidos = {}
+        for k, v in dados.items():
+            if isinstance(v, (pd.Timestamp, datetime)):
+                dados_convertidos[k] = v.strftime("%Y-%m-%d")
+            else:
+                dados_convertidos[k] = str(v)
+
         ws = planilha.worksheet(aba)
         colunas = ws.row_values(1)
-        valores = [dados.get(c, "") for c in colunas]
+        valores = [dados_convertidos.get(c, "") for c in colunas]
+
         ws.update(f"A{linha}:G{linha}", [valores[:7]])
+        st.info(f"✅ Linha {linha} atualizada com sucesso.")
     except Exception as e:
         st.error(f"❌ Erro ao atualizar linha na aba {aba}: {e}")
 
@@ -79,7 +87,8 @@ def dia_da_cor(cor):
     return mapa.get(cor, "?")
 
 def emoji_cor(cor):
-    mapa = {"azul": "🟦", "verde": "🟩", "amarelo": "🟨", "laranja": "🟧", "vermelho": "🟥", "prata": "⬜", "dourado": "🟨✨"}
+    mapa = {"azul": "🟦", "verde": "🟩", "amarelo": "🟨", "laranja": "🟧",
+            "vermelho": "🟥", "prata": "⬜", "dourado": "🟨✨"}
     return mapa.get(cor, "⬛")
 
 def gerar_alertas(producao):
@@ -112,7 +121,7 @@ def login_page(planilha):
         if not user.empty:
             st.session_state["logado"] = True
             st.session_state["usuario"] = usuario
-            st.session_state["tipo"] = user.iloc[0]["tipo"]
+            st.session_state["tipo"] = user.iloc[0].get("tipo", "usuario")
             st.success(f"Bem-vindo(a), {user.iloc[0]['nome']} 👋")
             st.rerun()
         else:
@@ -136,14 +145,11 @@ def main_app(planilha):
          "♻️ Remarcar Produtos", "Relatórios 📈", "Zerar Sistema 🧹"]
     )
 
-    # --- Alertas ---
-    st.sidebar.markdown("### 🔔 Alertas")
+    st.sidebar.markdown("### 🔔 Alertas de Validade")
     for alerta in gerar_alertas(producao):
         st.sidebar.warning(alerta)
 
-    # ===============================
     # PAINEL
-    # ===============================
     if menu == "📊 Painel de Status":
         st.header("📊 Situação Atual")
         if producao.empty:
@@ -157,9 +163,7 @@ def main_app(planilha):
             )
             st.dataframe(producao[["id","produto","cor","data_producao","data_validade","dias_restantes","status"]])
 
-    # ===============================
     # PRODUÇÃO
-    # ===============================
     elif menu == "Registrar Produção 🧁":
         st.header("🧁 Registrar Produção")
         produto = st.text_input("Produto:")
@@ -184,9 +188,7 @@ def main_app(planilha):
                 salvar_planilha_segura(planilha, "producao", producao)
                 st.success(f"✅ Produção registrada com cor {emoji_cor(cor)} {cor.upper()} ({dia_da_cor(cor)}).")
 
-    # ===============================
     # DESPERDÍCIO
-    # ===============================
     elif menu == "Registrar Desperdício ⚠️":
         st.header("⚠️ Registrar Desperdício")
 
@@ -232,9 +234,7 @@ def main_app(planilha):
         else:
             st.info("Digite parte do nome do produto para buscar.")
 
-    # ===============================
     # REMARCAÇÃO
-    # ===============================
     elif menu == "♻️ Remarcar Produtos":
         st.header("♻️ Remarcação de Produtos")
         if producao.empty:
@@ -267,9 +267,7 @@ def main_app(planilha):
                     else:
                         st.error("❌ ID não encontrado.")
 
-    # ===============================
     # ZERAR
-    # ===============================
     elif menu == "Zerar Sistema 🧹":
         st.header("🧹 Zerar Sistema")
         if st.session_state["tipo"] != "admin":
