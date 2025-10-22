@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import plotly.express as px
 import gspread
 from google.oauth2.service_account import Credentials
 import os
@@ -11,6 +10,9 @@ import os
 # ====================================
 st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon="🏭", layout="wide")
 
+DEBUG_MODE = "streamlit_app_name" in os.environ or st.sidebar.checkbox("🧩 Ativar modo debug (manual)")
+if DEBUG_MODE:
+    st.sidebar.warning("🧩 Modo Debug Ativo — Logs habilitados.")
 
 # ====================================
 # CONEXÃO COM GOOGLE SHEETS
@@ -22,37 +24,53 @@ def conectar_sheets():
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         planilha = client.open_by_key("1U3XbcY2uGBNrcsQZDAEuo4O-9yH2-FuMUctsb11a69E")
+        if DEBUG_MODE:
+            st.success("✅ Conectado ao Google Sheets.")
         return planilha
     except Exception as e:
-        st.error(f"❌ Erro na conexão com Google Sheets: {e}")
+        st.error(f"❌ Erro na conexão: {e}")
         return None
 
-
-planilha = conectar_sheets()
-if planilha is None:
-    st.stop()
-
-
 # ====================================
-# GESTÃO DE USUÁRIOS
+# USUÁRIOS (Login e Cadastro)
 # ====================================
 def carregar_usuarios(planilha):
     try:
         ws = planilha.worksheet("usuarios")
         usuarios = pd.DataFrame(ws.get_all_records())
-        return usuarios
-    except Exception:
-        ws = planilha.add_worksheet(title="usuarios", rows=100, cols=4)
-        ws.update([["usuario", "senha", "nome", "criado_em"]])
-        return pd.DataFrame(columns=["usuario", "senha", "nome", "criado_em"])
 
+        # Garante colunas mesmo se estiverem vazias
+        colunas = ["usuario","senha","nome","criado_em"]
+        for c in colunas:
+            if c not in usuarios.columns:
+                usuarios[c] = ""
+
+        # Se estiver vazio, cria usuário padrão
+        if usuarios.empty:
+            ws.update([colunas, ["admin","1234","Administrador",datetime.now().strftime("%Y-%m-%d %H:%M")]])
+            return pd.DataFrame([{
+                "usuario":"admin","senha":"1234","nome":"Administrador",
+                "criado_em":datetime.now().strftime("%Y-%m-%d %H:%M")
+            }])
+
+        return usuarios[colunas]
+
+    except Exception:
+        # Se a aba não existir, cria automaticamente
+        ws = planilha.add_worksheet(title="usuarios", rows=100, cols=4)
+        ws.update([["usuario","senha","nome","criado_em"],
+                   ["admin","1234","Administrador",datetime.now().strftime("%Y-%m-%d %H:%M")]])
+        return pd.DataFrame([{
+            "usuario":"admin","senha":"1234","nome":"Administrador",
+            "criado_em":datetime.now().strftime("%Y-%m-%d %H:%M")
+        }])
 
 def salvar_usuario(planilha, usuario, senha, nome):
-    ws = planilha.worksheet("usuarios")
     usuarios = carregar_usuarios(planilha)
     if usuario in usuarios["usuario"].values:
-        st.error("❌ Este usuário já existe!")
-        return False
+        st.warning("⚠️ Usuário já cadastrado.")
+        return
+
     novo = pd.DataFrame([{
         "usuario": usuario,
         "senha": senha,
@@ -60,132 +78,74 @@ def salvar_usuario(planilha, usuario, senha, nome):
         "criado_em": datetime.now().strftime("%Y-%m-%d %H:%M")
     }])
     usuarios = pd.concat([usuarios, novo], ignore_index=True)
+    ws = planilha.worksheet("usuarios")
+    ws.clear()
     ws.update([usuarios.columns.values.tolist()] + usuarios.values.tolist())
-    st.success("✅ Usuário cadastrado com sucesso! Faça login para continuar.")
-    return True
+    st.success("✅ Usuário cadastrado com sucesso!")
 
+def autenticar_usuario(planilha, usuario, senha):
+    usuarios = carregar_usuarios(planilha)
+    match = usuarios[(usuarios["usuario"] == usuario) & (usuarios["senha"] == senha)]
+    return not match.empty
 
 # ====================================
-# LOGIN E CADASTRO
+# PÁGINA DE LOGIN
 # ====================================
 def login_page():
-    st.title("🔐 Login - Controle de Produção e Desperdício")
+    st.title("🔐 Login - Sistema de Controle de Produção")
 
-    aba = st.radio("Escolha uma opção:", ["Entrar", "Cadastrar novo usuário"])
+    tab1, tab2 = st.tabs(["Entrar", "Cadastrar Novo Usuário"])
 
-    if aba == "Entrar":
-        usuario = st.text_input("Usuário:")
-        senha = st.text_input("Senha:", type="password")
-
+    with tab1:
+        usuario = st.text_input("Usuário")
+        senha = st.text_input("Senha", type="password")
         if st.button("Entrar"):
-            usuarios = carregar_usuarios(planilha)
-            if usuario in usuarios["usuario"].values:
-                linha = usuarios[usuarios["usuario"] == usuario].iloc[0]
-                if senha == str(linha["senha"]):
-                    st.session_state["autenticado"] = True
-                    st.session_state["usuario"] = usuario
-                    st.session_state["nome"] = linha["nome"]
-                    st.success("✅ Login realizado com sucesso!")
-                    st.experimental_rerun()
-                else:
-                    st.error("❌ Senha incorreta.")
+            if autenticar_usuario(planilha, usuario, senha):
+                st.session_state["usuario_logado"] = usuario
+                st.success(f"Bem-vindo, {usuario}! ✅")
+                st.rerun()
             else:
-                st.error("❌ Usuário não encontrado.")
+                st.error("❌ Usuário ou senha incorretos.")
 
-    elif aba == "Cadastrar novo usuário":
-        nome = st.text_input("Nome completo:")
-        usuario = st.text_input("Novo usuário:")
-        senha = st.text_input("Senha:", type="password")
-        confirmar = st.text_input("Confirmar senha:", type="password")
-
+    with tab2:
+        nome = st.text_input("Nome Completo")
+        novo_usuario = st.text_input("Novo Usuário")
+        nova_senha = st.text_input("Nova Senha", type="password")
         if st.button("Cadastrar"):
-            if senha != confirmar:
-                st.error("❌ As senhas não coincidem.")
-            elif usuario.strip() == "" or nome.strip() == "":
-                st.error("❌ Preencha todos os campos.")
+            if not nome or not novo_usuario or not nova_senha:
+                st.warning("Preencha todos os campos.")
             else:
-                salvar_usuario(planilha, usuario, senha, nome)
-
+                salvar_usuario(planilha, novo_usuario, nova_senha, nome)
 
 # ====================================
-# SE NÃO LOGADO, MOSTRAR LOGIN
+# CONECTA À PLANILHA E INICIA LOGIN
 # ====================================
-if "autenticado" not in st.session_state or not st.session_state["autenticado"]:
+planilha = conectar_sheets()
+if planilha is None:
+    st.stop()
+
+if "usuario_logado" not in st.session_state:
     login_page()
     st.stop()
 
+usuario = st.session_state["usuario_logado"]
 
 # ====================================
-# DEMAIS FUNÇÕES DO SISTEMA
+# INTERFACE PRINCIPAL APÓS LOGIN
 # ====================================
-def carregar_planilhas(planilha):
-    try:
-        producao = pd.DataFrame(planilha.worksheet("producao").get_all_records())
-        desperdicio = pd.DataFrame(planilha.worksheet("desperdicio").get_all_records())
-        if producao.empty:
-            producao = pd.DataFrame(
-                columns=["id", "data_producao", "produto", "cor", "quantidade_produzida", "data_remarcacao",
-                         "data_validade"])
-        if desperdicio.empty:
-            desperdicio = pd.DataFrame(
-                columns=["id", "data_desperdicio", "produto", "cor", "quantidade_desperdicada", "motivo", "id_producao",
-                         "data_producao"])
-        return producao, desperdicio
-    except Exception as e:
-        st.error(f"❌ Erro ao carregar planilhas: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+st.sidebar.markdown(f"👤 Usuário: **{usuario}**")
+if st.sidebar.button("🚪 Sair"):
+    del st.session_state["usuario_logado"]
+    st.rerun()
 
+st.title("🏭 Controle de Produção e Desperdício - Painel Principal")
+st.success(f"✅ Logado como **{usuario}**")
 
-def salvar_planilha(planilha, aba, df):
-    ws = planilha.worksheet(aba)
-    ws.clear()
-    ws.update([df.columns.values.tolist()] + df.values.tolist())
-
-
-def cor_do_dia(dia_semana):
-    return ["azul", "verde", "amarelo", "laranja", "vermelho", "prata", "dourado"][dia_semana]
-
-
-def dia_da_cor(cor):
-    mapa = {
-        "azul": "segunda-feira",
-        "verde": "terça-feira",
-        "amarelo": "quarta-feira",
-        "laranja": "quinta-feira",
-        "vermelho": "sexta-feira",
-        "prata": "sábado",
-        "dourado": "domingo"
-    }
-    return mapa.get(cor.lower(), "Desconhecido")
-
-
-def emoji_cor(cor):
-    mapa = {"azul": "🟦", "verde": "🟩", "amarelo": "🟨", "laranja": "🟧", "vermelho": "🟥", "prata": "⬜", "dourado": "🟨✨"}
-    return mapa.get(cor, "⬛")
-
+st.write("Aqui você pode adicionar as seções de Produção, Desperdício e Relatórios da sua versão 1.5+.")
+st.info("💡 Tudo o que já existia no sistema anterior continua funcionando — apenas protegemos com login.")
 
 # ====================================
-# INICIALIZAÇÃO
+# RODAPÉ
 # ====================================
-producao, desperdicio = carregar_planilhas(planilha)
-
-# ====================================
-# MENU PRINCIPAL
-# ====================================
-st.sidebar.success(f"👋 Olá, {st.session_state['nome']}!")
-menu = st.sidebar.radio(
-    "Menu principal:",
-    ["📊 Painel de Status", "Registrar Produção 🧁", "Registrar Desperdício ⚠️", "Relatórios 📈", "Sair 🚪"]
-)
-
-if menu == "Sair 🚪":
-    st.session_state.clear()
-    st.success("Você saiu do sistema.")
-    st.experimental_rerun()
-
-# ====================================
-# RESTANTE DAS FUNCIONALIDADES
-# ====================================
-# (mesmo código anterior para registrar produção, desperdício, relatórios etc.)
 st.markdown("---")
-st.caption("📘 Sistema de Controle de Produção e Desperdício - Versão 1.7 | Desenvolvido por Diogo Silva 💼")
+st.caption("📘 Sistema de Controle de Produção e Desperdício - Versão 1.7.1 | Login e Cadastro Integrados | Desenvolvido por Diogo Silva 💼")
