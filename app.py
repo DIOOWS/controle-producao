@@ -44,16 +44,25 @@ def carregar_planilhas(planilha):
 
 
 def salvar_planilha_segura(planilha, aba, df):
-    """Salva sem apagar cabeçalhos ou sobrescrever tudo."""
+    """Salva o DataFrame inteiro (uso apenas quando necessário)."""
     try:
         ws = planilha.worksheet(aba)
+        ws.clear()
         if not df.empty:
-            ws.batch_clear(["A2:Z10000"])
             ws.update([df.columns.values.tolist()] + df.values.tolist())
-        else:
-            st.warning(f"⚠️ Nenhum dado para salvar na aba '{aba}'.")
     except Exception as e:
         st.error(f"❌ Erro ao salvar na aba {aba}: {e}")
+
+
+def atualizar_linha(planilha, aba, linha, dados):
+    """Atualiza apenas uma linha específica na planilha sem apagar o resto."""
+    try:
+        ws = planilha.worksheet(aba)
+        colunas = ws.row_values(1)
+        valores = [dados.get(c, "") for c in colunas]
+        ws.update(f"A{linha}:G{linha}", [valores[:7]])
+    except Exception as e:
+        st.error(f"❌ Erro ao atualizar linha na aba {aba}: {e}")
 
 # ====================================
 # FUNÇÕES AUXILIARES
@@ -108,7 +117,6 @@ def login_page(planilha):
             st.rerun()
         else:
             st.error("Usuário ou senha incorretos.")
-
 
 # ====================================
 # APP PRINCIPAL
@@ -247,9 +255,14 @@ def main_app(planilha):
                     if id_remarcar in producao["id"].values:
                         hoje = datetime.now()
                         nova_validade = (hoje + timedelta(days=dias_extra)).strftime("%Y-%m-%d")
+
                         producao.loc[producao["id"] == id_remarcar, "data_remarcacao"] = hoje.strftime("%Y-%m-%d")
                         producao.loc[producao["id"] == id_remarcar, "data_validade"] = nova_validade
-                        salvar_planilha_segura(planilha, "producao", producao)
+
+                        linha_planilha = int(producao.loc[producao["id"] == id_remarcar].index[0]) + 2
+                        dados_atualizados = producao.loc[producao["id"] == id_remarcar].iloc[0].to_dict()
+                        atualizar_linha(planilha, "producao", linha_planilha, dados_atualizados)
+
                         st.success(f"✅ Produto ID {id_remarcar} remarcado até {nova_validade}.")
                     else:
                         st.error("❌ ID não encontrado.")
