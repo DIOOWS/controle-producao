@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+import time
 from io import BytesIO
 
 # ====================================
@@ -13,6 +14,7 @@ st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon
 # ====================================
 # CONEXÃO E CARREGAMENTO OTIMIZADOS
 # ====================================
+
 @st.cache_resource
 def conectar_sheets():
     """Conecta ao Google Sheets apenas uma vez."""
@@ -28,9 +30,9 @@ def conectar_sheets():
         return None
 
 
-@st.cache_data(ttl=90)
+@st.cache_data(ttl=600)
 def carregar_planilhas(planilha):
-    """Lê as abas com cache de 90 segundos (evita quota errors)."""
+    """Lê as abas do Sheets e mantém cache por 10 minutos."""
     try:
         abas = {ws.title: ws.get_all_records() for ws in planilha.worksheets()}
 
@@ -38,6 +40,7 @@ def carregar_planilhas(planilha):
         desperdicio = pd.DataFrame(abas.get("desperdicio", []))
         usuarios = pd.DataFrame(abas.get("usuarios", []))
 
+        # Estrutura padrão
         if producao.empty:
             producao = pd.DataFrame(columns=["id", "data_producao", "produto", "cor",
                                              "quantidade_produzida", "data_remarcacao", "data_validade"])
@@ -51,18 +54,20 @@ def carregar_planilhas(planilha):
 
 
 def salvar_planilha_segura(planilha, aba, df):
-    """Salva o DataFrame inteiro de forma segura."""
+    """Salva os dados com delay e segurança."""
     try:
         ws = planilha.worksheet(aba)
         ws.clear()
+        time.sleep(1)
         if not df.empty:
             ws.update([df.columns.values.tolist()] + df.values.tolist())
+        st.success(f"✅ Dados salvos com sucesso na aba '{aba}'.")
     except Exception as e:
         st.error(f"❌ Erro ao salvar na aba {aba}: {e}")
 
 
 def atualizar_linha(planilha, aba, linha, dados):
-    """Atualiza apenas uma linha específica na planilha."""
+    """Atualiza apenas uma linha específica."""
     try:
         dados_convertidos = {}
         for k, v in dados.items():
@@ -74,7 +79,6 @@ def atualizar_linha(planilha, aba, linha, dados):
         ws = planilha.worksheet(aba)
         colunas = ws.row_values(1)
         valores = [dados_convertidos.get(c, "") for c in colunas]
-
         ws.update(f"A{linha}:G{linha}", [valores[:7]])
         st.info(f"✅ Linha {linha} atualizada com sucesso.")
     except Exception as e:
@@ -142,6 +146,27 @@ def login_page(planilha):
 def main_app(planilha):
     producao, desperdicio, usuarios = carregar_planilhas(planilha)
 
+    # ====================================
+    # CABEÇALHO DE ATUALIZAÇÃO + BOTÃO MANUAL
+    # ====================================
+    ultima_atualizacao = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    st.markdown(
+        f"""
+        <div style="background-color:#e8f4ff;padding:10px;border-radius:8px;margin-bottom:10px;">
+            <b>🔄 Dados atualizados a cada 10 minutos.</b><br>
+            Última atualização: <span style="color:#0073e6;">{ultima_atualizacao}</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    if st.button("🔁 Atualizar Agora"):
+        st.cache_data.clear()
+        st.experimental_rerun()
+
+    # ====================================
+    # MENU LATERAL
+    # ====================================
     st.sidebar.markdown(f"👤 Usuário: **{st.session_state['usuario']}**")
     st.sidebar.markdown(f"🔐 Tipo: **{st.session_state['tipo']}**")
     if st.sidebar.button("Sair"):
@@ -158,9 +183,9 @@ def main_app(planilha):
     for alerta in gerar_alertas(producao):
         st.sidebar.warning(alerta)
 
-    # ==========================
+    # ====================================
     # PAINEL
-    # ==========================
+    # ====================================
     if menu == "📊 Painel de Status":
         st.header("📊 Situação Atual")
         if producao.empty:
@@ -174,9 +199,9 @@ def main_app(planilha):
             )
             st.dataframe(producao[["id","produto","cor","data_producao","data_validade","dias_restantes","status"]])
 
-    # ==========================
+    # ====================================
     # RELATÓRIOS
-    # ==========================
+    # ====================================
     elif menu == "Relatórios 📈":
         st.header("📈 Relatórios de Produção e Desperdício")
         aba = st.radio("Escolha o tipo de relatório:", ["Produção", "Desperdício"])
@@ -201,19 +226,16 @@ def main_app(planilha):
                 st.dataframe(df_desp)
                 st.bar_chart(df_desp.set_index("produto"))
 
-    # ==========================
-    # EXPORTAÇÃO DE RELATÓRIOS
-    # ==========================
+    # ====================================
+    # EXPORTAR RELATÓRIOS
+    # ====================================
     elif menu == "📤 Exportar Relatórios":
         st.header("📤 Exportar Relatórios em Excel ou CSV")
 
         tipo = st.radio("Escolha o que exportar:", ["Produção", "Desperdício"])
         formato = st.radio("Formato do arquivo:", ["Excel (.xlsx)", "CSV (.csv)"])
 
-        if tipo == "Produção":
-            df = producao.copy()
-        else:
-            df = desperdicio.copy()
+        df = producao.copy() if tipo == "Produção" else desperdicio.copy()
 
         if df.empty:
             st.warning("⚠️ Nenhum dado disponível para exportação.")
@@ -238,9 +260,9 @@ def main_app(planilha):
                     mime="text/csv"
                 )
 
-    # ==========================
+    # ====================================
     # ZERAR SISTEMA
-    # ==========================
+    # ====================================
     elif menu == "Zerar Sistema 🧹":
         st.header("🧹 Zerar Sistema")
         if st.session_state["tipo"] != "admin":
