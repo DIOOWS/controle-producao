@@ -1,11 +1,11 @@
 # ====================================
-# 🏭 CONTROLE DE PRODUÇÃO E DESPERDÍCIO v3.8
+# 🏭 CONTROLE DE PRODUÇÃO E DESPERDÍCIO v3.9
 # ====================================
 # Autor: Diogo Silva
-# Atualizado: v3.8 (Estoque com filtros + melhorias)
+# Atualizado: v3.9 (Estoque com filtros, busca e correções JSON)
 # - Mantidas TODAS as funcionalidades originais
-# - Corrigidos erros JSON e serialização
-# - Adicionada aba "📦 Estoque Atual" com filtros
+# - Adicionada busca instantânea no Estoque
+# - Corrigidos erros de serialização Supabase
 # ====================================
 
 import streamlit as st
@@ -144,7 +144,7 @@ def main_app():
         st.sidebar.error(f"Erro ao carregar alertas: {e}")
 
     # ====================================
-    # NOVA ABA 📦 ESTOQUE ATUAL
+    # 📦 ESTOQUE ATUAL (com busca + filtros)
     # ====================================
     if menu == "📦 Estoque Atual":
         st.header("📦 Estoque Atual de Produtos")
@@ -161,6 +161,7 @@ def main_app():
         else:
             producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
             producao["data_producao"] = pd.to_datetime(producao["data_producao"], errors="coerce")
+            producao = producao.dropna(subset=["data_producao"])
 
             col1, col2 = st.columns(2)
             with col1:
@@ -176,6 +177,11 @@ def main_app():
             produto_sel = st.selectbox("Filtrar por produto (opcional):", ["Todos"] + list(producao["produto"].unique()))
             if produto_sel != "Todos":
                 producao = producao[producao["produto"] == produto_sel]
+
+            # 🔍 Busca instantânea
+            busca = st.text_input("🔍 Buscar produto:")
+            if busca:
+                producao = producao[producao["produto"].str.contains(busca, case=False, na=False)]
 
             hoje = datetime.now().date()
             producao["dias_restantes"] = producao["data_validade"].apply(
@@ -203,15 +209,14 @@ def main_app():
             )
 
             col1, col2, col3 = st.columns(3)
-            col1.metric("🧁 Produzido", producao["quantidade_produzida"].sum())
-            col2.metric("⚠️ Desperdiçado", producao["quantidade_desperdicada"].sum())
-            col3.metric("📦 Estoque Atual", producao["estoque_atual"].sum())
+            col1.metric("🧁 Produzido", int(producao["quantidade_produzida"].sum()))
+            col2.metric("⚠️ Desperdiçado", int(producao["quantidade_desperdicada"].sum()))
+            col3.metric("📦 Estoque Atual", int(producao["estoque_atual"].sum()))
 
             st.bar_chart(producao.groupby("status")["estoque_atual"].sum())
 
     # ====================================
-    # (Restante do código: registrar produção, desperdício, remarcação,
-    # relatórios, exportação, usuários e zerar sistema continuam iguais)
+    # (As demais abas continuam exatamente como nas versões anteriores)
     # ====================================
 
 # ====================================
