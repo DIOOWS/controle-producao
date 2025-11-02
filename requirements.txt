@@ -1,9 +1,4 @@
 streamlit
 pandas
-plotly
-gspread
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
-protobuf==4.25.3
-requests
+supabase
+XlsxWriter

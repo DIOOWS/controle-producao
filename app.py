@@ -166,17 +166,112 @@ def main_app():
             st.info("Sem dados para exibir.")
 
     # ====================================
-    # EXPORTAR
+    # PAINEL DE STATUS
+    # ====================================
+    if menu == "📊 Painel de Status":
+        st.header("📊 Situação Atual de Produção")
+
+        try:
+            dados = supabase.table("producao").select("*").execute().data
+            producao = pd.DataFrame(dados)
+        except Exception as e:
+            st.error(f"❌ Erro ao carregar dados: {e}")
+            st.stop()
+
+        if producao.empty:
+            st.info("Nenhum produto cadastrado ainda.")
+        else:
+            # 🔹 Converte a coluna de validade para datetime corretamente
+            producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
+            producao["data_producao"] = pd.to_datetime(producao["data_producao"], errors="coerce")
+
+            hoje = datetime.now().date()
+
+            # 🔹 Calcula dias restantes com segurança
+            producao["dias_restantes"] = producao["data_validade"].apply(
+                lambda x: (x.date() - hoje).days if pd.notnull(x) else None
+            )
+
+            # 🔹 Define o status conforme a validade
+            def status_vencimento(dias):
+                if dias is None:
+                    return "❓ Sem data"
+                elif dias > 2:
+                    return "✅ Dentro do prazo"
+                elif 0 < dias <= 2:
+                    return "⚠️ Perto do vencimento"
+                else:
+                    return "❌ Vencido"
+
+            producao["status"] = producao["dias_restantes"].apply(status_vencimento)
+
+            # 🔹 Mostra tabela detalhada
+            st.dataframe(
+                producao[["id", "produto", "cor", "data_producao", "data_validade", "dias_restantes", "status"]]
+            )
+
+            # 🔹 Mostra métricas no topo
+            col1, col2, col3 = st.columns(3)
+            total = len(producao)
+            vencidos = len(producao[producao["status"].str.contains("Vencido")])
+            perto = len(producao[producao["status"].str.contains("Perto")])
+            ativos = total - vencidos - perto
+
+            col1.metric("🧁 Total de Produtos", total)
+            col2.metric("⚠️ Perto do Vencimento", perto)
+            col3.metric("❌ Vencidos", vencidos)
+
+    # ====================================
+    # EXPORTAR RELATÓRIOS / DADOS
     # ====================================
     elif menu == "📤 Exportar":
-        st.header("📤 Exportar dados")
-        aba = st.radio("Escolha:", ["Produção", "Desperdício"])
-        df = pd.DataFrame(supabase.table(aba.lower()).select("*").execute().data)
+        st.header("📤 Exportar Dados do Sistema")
+
+        # Opções de exportação
+        aba = st.radio("Escolha o tipo de dado para exportar:", ["Produção", "Desperdício"])
+        formato = st.radio("Formato do arquivo:", ["Excel (.xlsx)", "CSV (.csv)"])
+
+        # Mapeia o nome da aba para o nome da tabela correta no Supabase
+        tabela = "producao" if aba == "Produção" else "desperdicio"
+
+        try:
+            # Busca os dados diretamente do Supabase
+            dados = supabase.table(tabela).select("*").execute().data
+            df = pd.DataFrame(dados)
+        except Exception as e:
+            st.error(f"❌ Erro ao buscar dados: {e}")
+            st.stop()
+
         if df.empty:
-            st.warning("Nenhum dado disponível.")
+            st.warning(f"⚠️ Nenhum dado encontrado na tabela '{tabela}'.")
         else:
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Baixar CSV", data=csv, file_name=f"{aba.lower()}.csv", mime="text/csv")
+            st.success(f"✅ {len(df)} registros carregados da tabela '{tabela}'.")
+
+            nome_arquivo = f"{tabela}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+            # Exportar como Excel
+            if formato == "Excel (.xlsx)":
+                from io import BytesIO
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    df.to_excel(writer, index=False, sheet_name=tabela.capitalize())
+                st.download_button(
+                    label="📥 Baixar Excel",
+                    data=buffer.getvalue(),
+                    file_name=f"{nome_arquivo}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+            # Exportar como CSV
+            else:
+                csv = df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="📥 Baixar CSV",
+                    data=csv,
+                    file_name=f"{nome_arquivo}.csv",
+                    mime="text/csv"
+                )
+
 
     # ====================================
     # ZERAR
