@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+from io import BytesIO
 
 # ====================================
 # CONFIGURAÇÃO DA PÁGINA
@@ -10,9 +11,11 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon="🏭", layout="wide")
 
 # ====================================
-# CONEXÃO COM GOOGLE SHEETS
+# CONEXÃO E CARREGAMENTO OTIMIZADOS
 # ====================================
+@st.cache_resource
 def conectar_sheets():
+    """Conecta ao Google Sheets apenas uma vez."""
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_dict = st.secrets["connections"]["gsheets"]
@@ -25,11 +28,15 @@ def conectar_sheets():
         return None
 
 
+@st.cache_data(ttl=90)
 def carregar_planilhas(planilha):
+    """Lê as abas com cache de 90 segundos (evita quota errors)."""
     try:
-        producao = pd.DataFrame(planilha.worksheet("producao").get_all_records())
-        desperdicio = pd.DataFrame(planilha.worksheet("desperdicio").get_all_records())
-        usuarios = pd.DataFrame(planilha.worksheet("usuarios").get_all_records())
+        abas = {ws.title: ws.get_all_records() for ws in planilha.worksheets()}
+
+        producao = pd.DataFrame(abas.get("producao", []))
+        desperdicio = pd.DataFrame(abas.get("desperdicio", []))
+        usuarios = pd.DataFrame(abas.get("usuarios", []))
 
         if producao.empty:
             producao = pd.DataFrame(columns=["id", "data_producao", "produto", "cor",
@@ -44,6 +51,7 @@ def carregar_planilhas(planilha):
 
 
 def salvar_planilha_segura(planilha, aba, df):
+    """Salva o DataFrame inteiro de forma segura."""
     try:
         ws = planilha.worksheet(aba)
         ws.clear()
@@ -54,7 +62,7 @@ def salvar_planilha_segura(planilha, aba, df):
 
 
 def atualizar_linha(planilha, aba, linha, dados):
-    """Atualiza apenas uma linha específica, convertendo datas para strings."""
+    """Atualiza apenas uma linha específica na planilha."""
     try:
         dados_convertidos = {}
         for k, v in dados.items():
@@ -95,7 +103,8 @@ def gerar_alertas(producao):
     hoje = datetime.now().date()
     alertas = []
     for _, row in producao.iterrows():
-        if pd.isna(row["data_validade"]): continue
+        if pd.isna(row["data_validade"]):
+            continue
         validade = pd.to_datetime(row["data_validade"]).date()
         dias = (validade - hoje).days
         if dias == 2:
@@ -111,8 +120,8 @@ def gerar_alertas(producao):
 # ====================================
 def login_page(planilha):
     st.title("🔐 Login no Sistema")
-
     producao, desperdicio, usuarios = carregar_planilhas(planilha)
+
     usuario = st.text_input("Usuário:")
     senha = st.text_input("Senha:", type="password")
 
@@ -142,14 +151,16 @@ def main_app(planilha):
     menu = st.sidebar.radio(
         "Menu principal:",
         ["📊 Painel de Status", "Registrar Produção 🧁", "Registrar Desperdício ⚠️",
-         "♻️ Remarcar Produtos", "Relatórios 📈", "Zerar Sistema 🧹"]
+         "♻️ Remarcar Produtos", "Relatórios 📈", "📤 Exportar Relatórios", "Zerar Sistema 🧹"]
     )
 
     st.sidebar.markdown("### 🔔 Alertas de Validade")
     for alerta in gerar_alertas(producao):
         st.sidebar.warning(alerta)
 
+    # ==========================
     # PAINEL
+    # ==========================
     if menu == "📊 Painel de Status":
         st.header("📊 Situação Atual")
         if producao.empty:
@@ -163,111 +174,73 @@ def main_app(planilha):
             )
             st.dataframe(producao[["id","produto","cor","data_producao","data_validade","dias_restantes","status"]])
 
-    # PRODUÇÃO
-    elif menu == "Registrar Produção 🧁":
-        st.header("🧁 Registrar Produção")
-        produto = st.text_input("Produto:")
-        quantidade = st.number_input("Quantidade produzida:", min_value=1, step=1)
-        if st.button("💾 Salvar Produção"):
-            if produto.strip() == "":
-                st.error("Digite o nome do produto.")
+    # ==========================
+    # RELATÓRIOS
+    # ==========================
+    elif menu == "Relatórios 📈":
+        st.header("📈 Relatórios de Produção e Desperdício")
+        aba = st.radio("Escolha o tipo de relatório:", ["Produção", "Desperdício"])
+
+        if aba == "Produção":
+            if producao.empty:
+                st.info("Nenhuma produção registrada.")
             else:
-                data = datetime.now()
-                cor = cor_do_dia(data.weekday())
-                validade = (data + timedelta(days=2)).strftime("%Y-%m-%d")
-                novo = {
-                    "id": len(producao) + 1,
-                    "data_producao": data.strftime("%Y-%m-%d"),
-                    "produto": produto.strip(),
-                    "cor": cor,
-                    "quantidade_produzida": quantidade,
-                    "data_remarcacao": "",
-                    "data_validade": validade
-                }
-                producao = pd.concat([producao, pd.DataFrame([novo])], ignore_index=True)
-                salvar_planilha_segura(planilha, "producao", producao)
-                st.success(f"✅ Produção registrada com cor {emoji_cor(cor)} {cor.upper()} ({dia_da_cor(cor)}).")
+                st.subheader("📊 Produção total por produto")
+                df_prod = producao.groupby("produto")["quantidade_produzida"].sum().reset_index()
+                df_prod = df_prod.sort_values(by="quantidade_produzida", ascending=False)
+                st.dataframe(df_prod)
+                st.bar_chart(df_prod.set_index("produto"))
 
-    # DESPERDÍCIO
-    elif menu == "Registrar Desperdício ⚠️":
-        st.header("⚠️ Registrar Desperdício")
-
-        produto = st.text_input("Buscar produto:")
-        if produto.strip():
-            prod_rel = producao[
-                (producao["produto"].str.lower().str.contains(produto.lower(), na=False)) &
-                (pd.to_datetime(producao["data_validade"]) >= datetime.now())
-            ]
-
-            if not prod_rel.empty:
-                st.success(f"{len(prod_rel)} produto(s) encontrados dentro do prazo.")
-                opcoes = [
-                    f"ID {row['id']} - {row['produto']} ({emoji_cor(row['cor'])} {row['cor']}) - {dia_da_cor(row['cor'])}"
-                    for _, row in prod_rel.iterrows()
-                ]
-                selecao = st.selectbox("Selecione o produto:", opcoes)
-
-                id_sel = int(selecao.split(" ")[1])
-                prod_sel = prod_rel[prod_rel["id"] == id_sel].iloc[0]
-
-                st.info(f"🟢 {prod_sel['produto']} ({emoji_cor(prod_sel['cor'])} {prod_sel['cor'].upper()} - {dia_da_cor(prod_sel['cor'])})")
-
-                quantidade = st.number_input("Quantidade desperdiçada:", min_value=1, step=1)
-                motivo = st.text_area("Motivo do desperdício:")
-
-                if st.button("💾 Registrar Desperdício"):
-                    novo = {
-                        "id": len(desperdicio) + 1,
-                        "data_desperdicio": datetime.now().strftime("%Y-%m-%d"),
-                        "produto": prod_sel["produto"],
-                        "cor": prod_sel["cor"],
-                        "quantidade_desperdicada": quantidade,
-                        "motivo": motivo,
-                        "id_producao": prod_sel["id"],
-                        "data_producao": prod_sel["data_producao"]
-                    }
-                    desperdicio = pd.concat([desperdicio, pd.DataFrame([novo])], ignore_index=True)
-                    salvar_planilha_segura(planilha, "desperdicio", desperdicio)
-                    st.success(f"✅ Desperdício registrado ({emoji_cor(prod_sel['cor'])} {prod_sel['cor']}).")
+        elif aba == "Desperdício":
+            if desperdicio.empty:
+                st.info("Nenhum desperdício registrado.")
             else:
-                st.warning("Nenhum produto encontrado dentro do prazo.")
+                st.subheader("⚠️ Quantidade desperdiçada por produto")
+                df_desp = desperdicio.groupby("produto")["quantidade_desperdicada"].sum().reset_index()
+                df_desp = df_desp.sort_values(by="quantidade_desperdicada", ascending=False)
+                st.dataframe(df_desp)
+                st.bar_chart(df_desp.set_index("produto"))
+
+    # ==========================
+    # EXPORTAÇÃO DE RELATÓRIOS
+    # ==========================
+    elif menu == "📤 Exportar Relatórios":
+        st.header("📤 Exportar Relatórios em Excel ou CSV")
+
+        tipo = st.radio("Escolha o que exportar:", ["Produção", "Desperdício"])
+        formato = st.radio("Formato do arquivo:", ["Excel (.xlsx)", "CSV (.csv)"])
+
+        if tipo == "Produção":
+            df = producao.copy()
         else:
-            st.info("Digite parte do nome do produto para buscar.")
+            df = desperdicio.copy()
 
-    # REMARCAÇÃO
-    elif menu == "♻️ Remarcar Produtos":
-        st.header("♻️ Remarcação de Produtos")
-        if producao.empty:
-            st.info("Nenhum produto cadastrado.")
+        if df.empty:
+            st.warning("⚠️ Nenhum dado disponível para exportação.")
         else:
-            producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
-            producao["dias_restantes"] = (producao["data_validade"] - datetime.now()).dt.days
-            exp = producao[producao["dias_restantes"] <= 2]
-
-            if exp.empty:
-                st.success("✅ Nenhum produto perto do vencimento.")
+            nome_arquivo = f"{tipo.lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if formato == "Excel (.xlsx)":
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    df.to_excel(writer, index=False, sheet_name=tipo)
+                st.download_button(
+                    label="📥 Baixar Excel",
+                    data=buffer.getvalue(),
+                    file_name=f"{nome_arquivo}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
             else:
-                st.dataframe(exp[["id","produto","cor","data_producao","data_validade","dias_restantes"]])
-                id_remarcar = st.number_input("Informe o ID do produto:", min_value=1, step=1)
-                dias_extra = st.number_input("Dias para nova validade:", min_value=1, step=1, value=2)
+                csv = df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="📥 Baixar CSV",
+                    data=csv,
+                    file_name=f"{nome_arquivo}.csv",
+                    mime="text/csv"
+                )
 
-                if st.button("♻️ Aplicar Remarcação"):
-                    if id_remarcar in producao["id"].values:
-                        hoje = datetime.now()
-                        nova_validade = (hoje + timedelta(days=dias_extra)).strftime("%Y-%m-%d")
-
-                        producao.loc[producao["id"] == id_remarcar, "data_remarcacao"] = hoje.strftime("%Y-%m-%d")
-                        producao.loc[producao["id"] == id_remarcar, "data_validade"] = nova_validade
-
-                        linha_planilha = int(producao.loc[producao["id"] == id_remarcar].index[0]) + 2
-                        dados_atualizados = producao.loc[producao["id"] == id_remarcar].iloc[0].to_dict()
-                        atualizar_linha(planilha, "producao", linha_planilha, dados_atualizados)
-
-                        st.success(f"✅ Produto ID {id_remarcar} remarcado até {nova_validade}.")
-                    else:
-                        st.error("❌ ID não encontrado.")
-
-    # ZERAR
+    # ==========================
+    # ZERAR SISTEMA
+    # ==========================
     elif menu == "Zerar Sistema 🧹":
         st.header("🧹 Zerar Sistema")
         if st.session_state["tipo"] != "admin":
