@@ -271,3 +271,10 @@ def main_app():
                     csv = df_filtrado.to_csv(index=False).encode("utf-8")
                     st.download_button("📥 Baixar CSV", data=csv,
                                        file_name=f"{tabela}_{data_inicio}_{data_fim}.csv", mime="text/csv")
+# ====================================
+# EXECUÇÃO
+# ====================================
+if "logado" not in st.session_state or not st.session_state["logado"]:
+    login_page()
+else:
+    main_app()
