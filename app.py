@@ -45,25 +45,39 @@ def emoji_cor(cor):
 def login_page():
     st.title("🔐 Login no Sistema")
 
-    usuarios = supabase.table("usuarios").select("*").execute().data
-    df_users = pd.DataFrame(usuarios)
+    # Testa conexão com Supabase
+    try:
+        usuarios = supabase.table("usuarios").select("*").execute().data
+        df_users = pd.DataFrame(usuarios)
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar com o banco: {e}")
+        return
+
+    if df_users.empty:
+        st.warning("⚠️ Nenhum usuário cadastrado no banco. Cadastre pelo painel do Supabase.")
+        return
 
     usuario = st.text_input("Usuário:")
     senha = st.text_input("Senha:", type="password")
 
     if st.button("Entrar"):
-        if df_users.empty:
-            st.error("Nenhum usuário cadastrado no banco.")
-            return
-        user = df_users[(df_users["usuario"] == usuario) & (df_users["senha"] == senha)]
+        # Verifica se o usuário existe
+        user = df_users[
+            (df_users["usuario"].str.strip().str.lower() == usuario.strip().lower())
+            & (df_users["senha"].astype(str).str.strip() == senha.strip())
+        ]
+
         if not user.empty:
             st.session_state["logado"] = True
-            st.session_state["usuario"] = usuario
+            st.session_state["usuario"] = user.iloc[0]["usuario"]
             st.session_state["tipo"] = user.iloc[0].get("tipo", "usuario")
-            st.success(f"Bem-vindo(a), {user.iloc[0]['nome']} 👋")
+            nome = user.iloc[0].get("nome", "Usuário")
+
+            st.success(f"Bem-vindo(a), {nome}! 👋")
             st.rerun()
         else:
-            st.error("Usuário ou senha incorretos.")
+            st.error("❌ Usuário ou senha incorretos.")
+
 
 # ====================================
 # APP PRINCIPAL
