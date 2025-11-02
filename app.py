@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 from io import BytesIO
+import bcrypt
 
 # ====================================
 # CONFIGURAÇÃO DA PÁGINA
@@ -27,18 +28,19 @@ def cor_do_dia(dia_semana):
     cores = ["azul", "verde", "amarelo", "laranja", "vermelho", "prata", "dourado"]
     return cores[dia_semana]
 
-def dia_da_cor(cor):
-    mapa = {
-        "azul": "Segunda-feira", "verde": "Terça-feira", "amarelo": "Quarta-feira",
-        "laranja": "Quinta-feira", "vermelho": "Sexta-feira",
-        "prata": "Sábado", "dourado": "Domingo"
-    }
-    return mapa.get(cor, "?")
-
 def emoji_cor(cor):
     mapa = {"azul": "🟦", "verde": "🟩", "amarelo": "🟨", "laranja": "🟧",
             "vermelho": "🟥", "prata": "⬜", "dourado": "🟨✨"}
     return mapa.get(cor, "⬛")
+
+def hash_senha(senha):
+    return bcrypt.hashpw(senha.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def verificar_senha(senha_digitada, senha_hash):
+    try:
+        return bcrypt.checkpw(senha_digitada.encode("utf-8"), senha_hash.encode("utf-8"))
+    except Exception:
+        return False
 
 # ====================================
 # LOGIN
@@ -54,25 +56,20 @@ def login_page():
         return
 
     if df_users.empty:
-        st.warning("⚠️ Nenhum usuário cadastrado no banco. Cadastre pelo painel do Supabase.")
+        st.warning("⚠️ Nenhum usuário cadastrado. Cadastre pelo painel do Supabase.")
         return
 
     usuario = st.text_input("Usuário:")
     senha = st.text_input("Senha:", type="password")
 
     if st.button("Entrar"):
-        user = df_users[
-            (df_users["usuario"].str.strip().str.lower() == usuario.strip().lower())
-            & (df_users["senha"].astype(str).str.strip() == senha.strip())
-        ]
-
-        if not user.empty:
+        user = df_users[df_users["usuario"].str.lower() == usuario.strip().lower()]
+        if not user.empty and verificar_senha(senha, user.iloc[0]["senha"]):
             st.session_state["logado"] = True
             st.session_state["usuario"] = user.iloc[0]["usuario"]
             st.session_state["tipo"] = user.iloc[0].get("tipo", "usuario")
-            nome = user.iloc[0].get("nome", "Usuário")
-
-            st.success(f"Bem-vindo(a), {nome}! 👋")
+            st.session_state["nome"] = user.iloc[0].get("nome", "Usuário")
+            st.success(f"Bem-vindo(a), {st.session_state['nome']} 👋")
             st.rerun()
         else:
             st.error("❌ Usuário ou senha incorretos.")
@@ -83,13 +80,23 @@ def login_page():
 def main_app():
     st.sidebar.markdown(f"👤 Usuário: **{st.session_state['usuario']}**")
     st.sidebar.markdown(f"🔐 Tipo: **{st.session_state['tipo']}**")
+
     if st.sidebar.button("Sair"):
         st.session_state.clear()
         st.rerun()
 
     menu = st.sidebar.radio(
         "Menu principal:",
-        ["📊 Painel de Status", "Registrar Produção 🧁", "Registrar Desperdício ⚠️", "📈 Relatórios", "📤 Exportar", "🧹 Zerar Sistema"]
+        [
+            "📊 Painel de Status",
+            "Registrar Produção 🧁",
+            "Registrar Desperdício ⚠️",
+            "♻️ Remarcar Produtos",
+            "📈 Relatórios",
+            "📤 Exportar",
+            "👥 Gerenciar Usuários",
+            "🧹 Zerar Sistema"
+        ]
     )
 
     # ====================================
@@ -105,7 +112,6 @@ def main_app():
             df_alertas["dias"] = df_alertas["data_validade"].apply(
                 lambda x: (x.date() - hoje).days if pd.notnull(x) else None
             )
-
             vencendo = df_alertas[df_alertas["dias"].between(0, 2, inclusive="both")]
             vencidos = df_alertas[df_alertas["dias"] < 0]
 
@@ -169,6 +175,98 @@ def main_app():
                 st.success("✅ Desperdício registrado!")
 
     # ====================================
+    # REMARCAR PRODUTOS
+    # ====================================
+    elif menu == "♻️ Remarcar Produtos":
+        st.header("♻️ Remarcação de Produtos")
+        dados = supabase.table("producao").select("*").execute().data
+        producao = pd.DataFrame(dados)
+
+        if producao.empty:
+            st.info("Nenhum produto cadastrado.")
+        else:
+            producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
+            hoje = datetime.now().date()
+            producao["dias_restantes"] = producao["data_validade"].apply(
+                lambda x: (x.date() - hoje).days if pd.notnull(x) else None
+            )
+            exp = producao[producao["dias_restantes"] <= 2]
+
+            if exp.empty:
+                st.success("✅ Nenhum produto perto do vencimento.")
+            else:
+                st.dataframe(exp[["id","produto","cor","data_producao","data_validade","dias_restantes"]])
+                id_remarcar = st.number_input("Informe o ID do produto:", min_value=1, step=1)
+                dias_extra = st.number_input("Dias adicionais de validade:", min_value=1, step=1, value=2)
+
+                if st.button("♻️ Aplicar Remarcação"):
+                    if id_remarcar in exp["id"].values:
+                        hoje = datetime.now()
+                        nova_validade = (hoje + timedelta(days=dias_extra)).strftime("%Y-%m-%d")
+
+                        supabase.table("producao").update({
+                            "data_remarcacao": hoje.strftime("%Y-%m-%d"),
+                            "data_validade": nova_validade
+                        }).eq("id", int(id_remarcar)).execute()
+
+                        st.success(f"✅ Produto ID {id_remarcar} remarcado até {nova_validade}.")
+                    else:
+                        st.error("❌ ID não encontrado entre os produtos próximos do vencimento.")
+
+    # ====================================
+    # GERENCIAR USUÁRIOS
+    # ====================================
+    elif menu == "👥 Gerenciar Usuários":
+        st.header("👥 Gerenciamento de Usuários")
+        if st.session_state["tipo"] != "admin":
+            st.warning("⚠️ Apenas o ADMIN pode gerenciar usuários.")
+        else:
+            usuarios = pd.DataFrame(supabase.table("usuarios").select("*").execute().data)
+
+            aba = st.radio("Ação:", ["Cadastrar Novo", "Editar / Excluir Existentes"])
+
+            if aba == "Cadastrar Novo":
+                nome = st.text_input("Nome completo:")
+                usuario = st.text_input("Usuário:")
+                senha = st.text_input("Senha:", type="password")
+                tipo = st.selectbox("Tipo de usuário:", ["usuario", "admin"])
+                if st.button("💾 Cadastrar Usuário"):
+                    if not usuario or not senha:
+                        st.error("Preencha todos os campos obrigatórios.")
+                    else:
+                        senha_hash = hash_senha(senha)
+                        supabase.table("usuarios").insert({
+                            "nome": nome,
+                            "usuario": usuario.strip().lower(),
+                            "senha": senha_hash,
+                            "tipo": tipo
+                        }).execute()
+                        st.success(f"✅ Usuário '{usuario}' cadastrado com sucesso!")
+
+            else:
+                if usuarios.empty:
+                    st.info("Nenhum usuário cadastrado.")
+                else:
+                    st.dataframe(usuarios[["id","nome","usuario","tipo"]])
+                    id_sel = st.number_input("ID do usuário:", min_value=1, step=1)
+                    novo_tipo = st.selectbox("Novo tipo:", ["usuario", "admin"])
+                    nova_senha = st.text_input("Nova senha (opcional):", type="password")
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("✏️ Atualizar Usuário"):
+                            atualiza = {"tipo": novo_tipo}
+                            if nova_senha:
+                                atualiza["senha"] = hash_senha(nova_senha)
+                            supabase.table("usuarios").update(atualiza).eq("id", int(id_sel)).execute()
+                            st.success("✅ Usuário atualizado com sucesso!")
+
+                    with col2:
+                        if st.button("🗑️ Excluir Usuário"):
+                            supabase.table("usuarios").delete().eq("id", int(id_sel)).execute()
+                            st.warning("🗑️ Usuário excluído!")
+
+    # ====================================
     # RELATÓRIOS
     # ====================================
     elif menu == "📈 Relatórios":
@@ -188,73 +286,6 @@ def main_app():
             st.bar_chart(df_desp.set_index("produto"))
         else:
             st.info("Sem dados para exibir.")
-
-    # ====================================
-    # PAINEL DE STATUS + POPUPS
-    # ====================================
-    if menu == "📊 Painel de Status":
-        st.header("📊 Situação Atual de Produção")
-
-        try:
-            dados = supabase.table("producao").select("*").execute().data
-            producao = pd.DataFrame(dados)
-        except Exception as e:
-            st.error(f"❌ Erro ao carregar dados: {e}")
-            st.stop()
-
-        if producao.empty:
-            st.info("Nenhum produto cadastrado ainda.")
-        else:
-            producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
-            producao["data_producao"] = pd.to_datetime(producao["data_producao"], errors="coerce")
-            hoje = datetime.now().date()
-
-            producao["dias_restantes"] = producao["data_validade"].apply(
-                lambda x: (x.date() - hoje).days if pd.notnull(x) else None
-            )
-
-            def status_vencimento(dias):
-                if dias is None:
-                    return "❓ Sem data"
-                elif dias > 2:
-                    return "✅ Dentro do prazo"
-                elif 0 < dias <= 2:
-                    return "⚠️ Perto do vencimento"
-                else:
-                    return "❌ Vencido"
-
-            producao["status"] = producao["dias_restantes"].apply(status_vencimento)
-
-            # Popups de alerta
-            st.subheader("🔔 Alertas de Validade")
-            alertas = producao[producao["status"].isin(["⚠️ Perto do vencimento", "❌ Vencido"])]
-
-            if alertas.empty:
-                st.success("✅ Nenhum produto perto do vencimento!")
-            else:
-                for _, row in alertas.iterrows():
-                    produto = row["produto"]
-                    cor = row["cor"]
-                    validade = row["data_validade"].strftime("%d/%m/%Y") if pd.notnull(row["data_validade"]) else "Sem data"
-                    status = row["status"]
-                    if "Perto" in status:
-                        st.warning(f"🟠 **{produto} ({cor})** — vence em {row['dias_restantes']} dia(s) ({validade})")
-                    elif "Vencido" in status:
-                        st.error(f"❌ **{produto} ({cor})** — VENCIDO em {validade}")
-
-            # Tabela e métricas
-            st.dataframe(
-                producao[["id", "produto", "cor", "data_producao", "data_validade", "dias_restantes", "status"]]
-            )
-
-            col1, col2, col3 = st.columns(3)
-            total = len(producao)
-            vencidos = len(producao[producao["status"].str.contains("Vencido")])
-            perto = len(producao[producao["status"].str.contains("Perto")])
-            col1.metric("🧁 Total de Produtos", total)
-            col2.metric("⚠️ Perto do Vencimento", perto)
-            col3.metric("❌ Vencidos", vencidos)
-
     # ====================================
     # EXPORTAR RELATÓRIOS / DADOS
     # ====================================
@@ -265,12 +296,8 @@ def main_app():
         formato = st.radio("Formato do arquivo:", ["Excel (.xlsx)", "CSV (.csv)"])
         tabela = "producao" if aba == "Produção" else "desperdicio"
 
-        try:
-            dados = supabase.table(tabela).select("*").execute().data
-            df = pd.DataFrame(dados)
-        except Exception as e:
-            st.error(f"❌ Erro ao buscar dados: {e}")
-            st.stop()
+        dados = supabase.table(tabela).select("*").execute().data
+        df = pd.DataFrame(dados)
 
         if df.empty:
             st.warning(f"⚠️ Nenhum dado encontrado na tabela '{tabela}'.")
