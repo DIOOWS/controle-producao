@@ -91,186 +91,147 @@ def main_app():
             "📊 Painel de Status",
             "Registrar Produção 🧁",
             "Registrar Desperdício ⚠️",
-            "♻️ Remarcar Produtos",
             "📈 Relatórios",
-            "📤 Exportar",
-            "👥 Gerenciar Usuários",
-            "🧹 Zerar Sistema"
+            "📤 Exportar"
         ]
     )
 
     # ====================================
-    # ALERTAS NA BARRA LATERAL
+    # REGISTRAR PRODUÇÃO
     # ====================================
-    st.sidebar.markdown("### 🔔 Alertas de Validade")
-    try:
-        dados_alertas = supabase.table("producao").select("*").execute().data
-        df_alertas = pd.DataFrame(dados_alertas)
-        if not df_alertas.empty:
-            df_alertas["data_validade"] = pd.to_datetime(df_alertas["data_validade"], errors="coerce")
-            hoje = datetime.now().date()
-            df_alertas["dias"] = df_alertas["data_validade"].apply(
-                lambda x: (x.date() - hoje).days if pd.notnull(x) else None
-            )
-            vencendo = df_alertas[df_alertas["dias"].between(0, 2, inclusive="both")]
-            vencidos = df_alertas[df_alertas["dias"] < 0]
+    if menu == "Registrar Produção 🧁":
+        st.header("🧁 Registrar Produção")
+        produto = st.text_input("Produto:")
+        quantidade = st.number_input("Quantidade produzida:", min_value=1, step=1)
 
-            for _, row in vencendo.iterrows():
-                st.sidebar.warning(f"⚠️ {row['produto']} ({row['cor']}) — vence em {row['dias']} dia(s)")
-            for _, row in vencidos.iterrows():
-                st.sidebar.error(f"❌ {row['produto']} ({row['cor']}) — VENCIDO!")
-        else:
-            st.sidebar.info("Nenhum produto cadastrado.")
-    except Exception as e:
-        st.sidebar.error(f"Erro ao carregar alertas: {e}")
+        if st.button("💾 Salvar Produção"):
+            if not produto.strip():
+                st.error("Digite o nome do produto.")
+            else:
+                data = datetime.now()
+                cor = cor_do_dia(data.weekday())
+                validade = (data + timedelta(days=2)).strftime("%Y-%m-%d")
+
+                try:
+                    supabase.table("producao").insert({
+                        "data_producao": data.strftime("%Y-%m-%d"),
+                        "produto": produto.strip(),
+                        "cor": cor,
+                        "quantidade_produzida": quantidade,
+                        "data_remarcacao": None,
+                        "data_validade": validade
+                    }).execute()
+                    st.success(f"✅ Produção salva com sucesso ({emoji_cor(cor)} {cor.upper()})")
+                except Exception as e:
+                    st.error(f"❌ Erro ao salvar produção: {e}")
+
+        st.divider()
+        st.subheader("📋 Produções recentes")
+        try:
+            dados = supabase.table("producao").select("*").order("id", desc=True).limit(10).execute().data
+            df = pd.DataFrame(dados)
+            if not df.empty:
+                st.dataframe(df)
+            else:
+                st.info("Nenhuma produção registrada ainda.")
+        except Exception as e:
+            st.error(f"Erro ao carregar produções: {e}")
 
     # ====================================
-    # PAINEL DE STATUS (com filtro de data)
+    # REGISTRAR DESPERDÍCIO
     # ====================================
-    if menu == "📊 Painel de Status":
-        st.header("📊 Situação Atual de Produção")
-
+    elif menu == "Registrar Desperdício ⚠️":
+        st.header("⚠️ Registrar Desperdício")
         try:
             dados = supabase.table("producao").select("*").execute().data
             producao = pd.DataFrame(dados)
         except Exception as e:
-            st.error(f"❌ Erro ao carregar dados: {e}")
-            st.stop()
+            st.error(f"Erro ao carregar produções: {e}")
+            return
 
         if producao.empty:
-            st.info("Nenhum produto cadastrado ainda.")
+            st.info("Nenhum produto disponível para marcar desperdício.")
         else:
-            st.subheader("🗓️ Filtrar por intervalo de datas")
-            col1, col2 = st.columns(2)
-            with col1:
-                data_inicio = st.date_input("Data inicial", datetime.now().date() - timedelta(days=7))
-            with col2:
-                data_fim = st.date_input("Data final", datetime.now().date())
+            produto = st.selectbox("Selecione o produto:", producao["produto"].unique())
+            quantidade = st.number_input("Quantidade desperdiçada:", min_value=1, step=1)
+            motivo = st.text_area("Motivo do desperdício:")
 
-            producao["data_producao"] = pd.to_datetime(producao["data_producao"], errors="coerce")
-            mask = (producao["data_producao"].dt.date >= data_inicio) & (producao["data_producao"].dt.date <= data_fim)
-            producao_filtrada = producao.loc[mask]
+            if st.button("💾 Registrar Desperdício"):
+                sel = producao[producao["produto"] == produto].iloc[0]
+                try:
+                    supabase.table("desperdicio").insert({
+                        "data_desperdicio": datetime.now().strftime("%Y-%m-%d"),
+                        "produto": produto,
+                        "cor": sel["cor"],
+                        "quantidade_desperdicada": quantidade,
+                        "motivo": motivo,
+                        "id_producao": sel["id"],
+                        "data_producao": sel["data_producao"]
+                    }).execute()
+                    st.success("✅ Desperdício registrado com sucesso!")
+                except Exception as e:
+                    st.error(f"Erro ao registrar desperdício: {e}")
 
-            if producao_filtrada.empty:
-                st.warning("⚠️ Nenhum registro encontrado no período selecionado.")
+        st.divider()
+        st.subheader("🧾 Desperdícios recentes")
+        try:
+            dados_desp = supabase.table("desperdicio").select("*").order("id", desc=True).limit(10).execute().data
+            df_desp = pd.DataFrame(dados_desp)
+            if not df_desp.empty:
+                st.dataframe(df_desp)
             else:
-                producao_filtrada["data_validade"] = pd.to_datetime(producao_filtrada["data_validade"], errors="coerce")
-                hoje = datetime.now().date()
-                producao_filtrada["dias_restantes"] = producao_filtrada["data_validade"].apply(
-                    lambda x: (x.date() - hoje).days if pd.notnull(x) else None
-                )
-
-                def status_vencimento(dias):
-                    if dias is None:
-                        return "❓ Sem data"
-                    elif dias > 2:
-                        return "✅ Dentro do prazo"
-                    elif 0 < dias <= 2:
-                        return "⚠️ Perto do vencimento"
-                    else:
-                        return "❌ Vencido"
-
-                producao_filtrada["status"] = producao_filtrada["dias_restantes"].apply(status_vencimento)
-
-                st.dataframe(
-                    producao_filtrada[["id", "produto", "cor", "data_producao", "data_validade", "dias_restantes", "status"]]
-                )
-
-                col1, col2, col3 = st.columns(3)
-                total = len(producao_filtrada)
-                vencidos = len(producao_filtrada[producao_filtrada["status"].str.contains("Vencido")])
-                perto = len(producao_filtrada[producao_filtrada["status"].str.contains("Perto")])
-                col1.metric("🧁 Total de Produtos", total)
-                col2.metric("⚠️ Perto do Vencimento", perto)
-                col3.metric("❌ Vencidos", vencidos)
+                st.info("Nenhum desperdício registrado ainda.")
+        except Exception as e:
+            st.error(f"Erro ao carregar desperdícios: {e}")
 
     # ====================================
-    # RELATÓRIOS (com filtro de data)
+    # PAINEL DE STATUS
+    # ====================================
+    elif menu == "📊 Painel de Status":
+        st.header("📊 Situação Atual")
+        try:
+            dados = supabase.table("producao").select("*").execute().data
+            producao = pd.DataFrame(dados)
+        except Exception as e:
+            st.error(f"Erro ao carregar: {e}")
+            return
+
+        if producao.empty:
+            st.info("Nenhum produto cadastrado.")
+        else:
+            producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
+            hoje = datetime.now().date()
+            producao["dias_restantes"] = producao["data_validade"].apply(
+                lambda x: (x.date() - hoje).days if pd.notnull(x) else None
+            )
+            producao["status"] = producao["dias_restantes"].apply(
+                lambda d: "✅ Dentro do prazo" if d and d > 2 else ("⚠️ Perto do vencimento" if d and d > 0 else "❌ Vencido")
+            )
+            st.dataframe(producao[["id","produto","cor","data_producao","data_validade","dias_restantes","status"]])
+
+    # ====================================
+    # RELATÓRIOS
     # ====================================
     elif menu == "📈 Relatórios":
         st.header("📈 Relatórios de Produção e Desperdício")
-
-        aba = st.radio("Escolha o tipo de relatório:", ["Produção", "Desperdício"])
-        st.subheader("🗓️ Filtrar por intervalo de datas")
-        col1, col2 = st.columns(2)
-        with col1:
-            data_inicio = st.date_input("Data inicial", datetime.now().date() - timedelta(days=7), key="inicio_rel")
-        with col2:
-            data_fim = st.date_input("Data final", datetime.now().date(), key="fim_rel")
-
+        aba = st.radio("Escolha o tipo:", ["Produção", "Desperdício"])
         if aba == "Produção":
-            producao = pd.DataFrame(supabase.table("producao").select("*").execute().data)
-            if producao.empty:
-                st.info("Nenhuma produção registrada.")
+            df = pd.DataFrame(supabase.table("producao").select("*").execute().data)
+            if df.empty:
+                st.info("Sem produções.")
             else:
-                producao["data_producao"] = pd.to_datetime(producao["data_producao"], errors="coerce")
-                mask = (producao["data_producao"].dt.date >= data_inicio) & (producao["data_producao"].dt.date <= data_fim)
-                df_prod = producao.loc[mask]
-
-                if df_prod.empty:
-                    st.warning("⚠️ Nenhum registro encontrado nesse período.")
-                else:
-                    df_resumo = df_prod.groupby("produto")["quantidade_produzida"].sum().reset_index()
-                    st.dataframe(df_resumo)
-                    st.bar_chart(df_resumo.set_index("produto"))
-
-        elif aba == "Desperdício":
-            desperdicio = pd.DataFrame(supabase.table("desperdicio").select("*").execute().data)
-            if desperdicio.empty:
-                st.info("Nenhum desperdício registrado.")
-            else:
-                desperdicio["data_desperdicio"] = pd.to_datetime(desperdicio["data_desperdicio"], errors="coerce")
-                mask = (desperdicio["data_desperdicio"].dt.date >= data_inicio) & (desperdicio["data_desperdicio"].dt.date <= data_fim)
-                df_desp = desperdicio.loc[mask]
-
-                if df_desp.empty:
-                    st.warning("⚠️ Nenhum registro encontrado nesse período.")
-                else:
-                    df_resumo = df_desp.groupby("produto")["quantidade_desperdicada"].sum().reset_index()
-                    st.dataframe(df_resumo)
-                    st.bar_chart(df_resumo.set_index("produto"))
-
-    # ====================================
-    # EXPORTAR RELATÓRIOS (filtrados)
-    # ====================================
-    elif menu == "📤 Exportar":
-        st.header("📤 Exportar Dados Filtrados por Data")
-
-        aba = st.radio("Escolha o tipo de dado para exportar:", ["Produção", "Desperdício"])
-        formato = st.radio("Formato do arquivo:", ["Excel (.xlsx)", "CSV (.csv)"])
-        col1, col2 = st.columns(2)
-        with col1:
-            data_inicio = st.date_input("Data inicial", datetime.now().date() - timedelta(days=7), key="inicio_exp")
-        with col2:
-            data_fim = st.date_input("Data final", datetime.now().date(), key="fim_exp")
-
-        tabela = "producao" if aba == "Produção" else "desperdicio"
-        dados = supabase.table(tabela).select("*").execute().data
-        df = pd.DataFrame(dados)
-
-        if df.empty:
-            st.warning(f"⚠️ Nenhum dado encontrado na tabela '{tabela}'.")
+                df_resumo = df.groupby("produto")["quantidade_produzida"].sum().reset_index()
+                st.bar_chart(df_resumo.set_index("produto"))
+                st.dataframe(df_resumo)
         else:
-            campo_data = "data_producao" if aba == "Produção" else "data_desperdicio"
-            df[campo_data] = pd.to_datetime(df[campo_data], errors="coerce")
-            mask = (df[campo_data].dt.date >= data_inicio) & (df[campo_data].dt.date <= data_fim)
-            df_filtrado = df.loc[mask]
-
-            if df_filtrado.empty:
-                st.warning("⚠️ Nenhum registro nesse período.")
+            df = pd.DataFrame(supabase.table("desperdicio").select("*").execute().data)
+            if df.empty:
+                st.info("Sem desperdícios.")
             else:
-                nome_arquivo = f"{tabela}_{data_inicio}_{data_fim}.xlsx"
-                if formato == "Excel (.xlsx)":
-                    buffer = BytesIO()
-                    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                        df_filtrado.to_excel(writer, index=False, sheet_name=tabela.capitalize())
-                    st.download_button("📥 Baixar Excel", data=buffer.getvalue(),
-                                       file_name=nome_arquivo,
-                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                else:
-                    csv = df_filtrado.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Baixar CSV", data=csv,
-                                       file_name=f"{tabela}_{data_inicio}_{data_fim}.csv", mime="text/csv")
+                df_resumo = df.groupby("produto")["quantidade_desperdicada"].sum().reset_index()
+                st.bar_chart(df_resumo.set_index("produto"))
+                st.dataframe(df_resumo)
+
 # ====================================
 # EXECUÇÃO
 # ====================================
