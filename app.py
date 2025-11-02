@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from supabase import create_client, Client
+from io import BytesIO
 
 # ====================================
 # CONFIGURAÇÃO DA PÁGINA
@@ -45,7 +46,6 @@ def emoji_cor(cor):
 def login_page():
     st.title("🔐 Login no Sistema")
 
-    # Testa conexão com Supabase
     try:
         usuarios = supabase.table("usuarios").select("*").execute().data
         df_users = pd.DataFrame(usuarios)
@@ -61,7 +61,6 @@ def login_page():
     senha = st.text_input("Senha:", type="password")
 
     if st.button("Entrar"):
-        # Verifica se o usuário existe
         user = df_users[
             (df_users["usuario"].str.strip().str.lower() == usuario.strip().lower())
             & (df_users["senha"].astype(str).str.strip() == senha.strip())
@@ -77,7 +76,6 @@ def login_page():
             st.rerun()
         else:
             st.error("❌ Usuário ou senha incorretos.")
-
 
 # ====================================
 # APP PRINCIPAL
@@ -95,7 +93,33 @@ def main_app():
     )
 
     # ====================================
-    # PRODUÇÃO
+    # ALERTAS NA BARRA LATERAL
+    # ====================================
+    st.sidebar.markdown("### 🔔 Alertas de Validade")
+    try:
+        dados_alertas = supabase.table("producao").select("*").execute().data
+        df_alertas = pd.DataFrame(dados_alertas)
+        if not df_alertas.empty:
+            df_alertas["data_validade"] = pd.to_datetime(df_alertas["data_validade"], errors="coerce")
+            hoje = datetime.now().date()
+            df_alertas["dias"] = df_alertas["data_validade"].apply(
+                lambda x: (x.date() - hoje).days if pd.notnull(x) else None
+            )
+
+            vencendo = df_alertas[df_alertas["dias"].between(0, 2, inclusive="both")]
+            vencidos = df_alertas[df_alertas["dias"] < 0]
+
+            for _, row in vencendo.iterrows():
+                st.sidebar.warning(f"⚠️ {row['produto']} ({row['cor']}) — vence em {row['dias']} dia(s)")
+            for _, row in vencidos.iterrows():
+                st.sidebar.error(f"❌ {row['produto']} ({row['cor']}) — VENCIDO!")
+        else:
+            st.sidebar.info("Nenhum produto cadastrado.")
+    except Exception as e:
+        st.sidebar.error(f"Erro ao carregar alertas: {e}")
+
+    # ====================================
+    # REGISTRAR PRODUÇÃO
     # ====================================
     if menu == "Registrar Produção 🧁":
         st.header("🧁 Registrar Produção")
@@ -119,7 +143,7 @@ def main_app():
                 st.success(f"✅ Produção salva ({emoji_cor(cor)} {cor.upper()})")
 
     # ====================================
-    # DESPERDÍCIO
+    # REGISTRAR DESPERDÍCIO
     # ====================================
     elif menu == "Registrar Desperdício ⚠️":
         st.header("⚠️ Registrar Desperdício")
@@ -166,7 +190,7 @@ def main_app():
             st.info("Sem dados para exibir.")
 
     # ====================================
-    # PAINEL DE STATUS
+    # PAINEL DE STATUS + POPUPS
     # ====================================
     if menu == "📊 Painel de Status":
         st.header("📊 Situação Atual de Produção")
@@ -181,18 +205,14 @@ def main_app():
         if producao.empty:
             st.info("Nenhum produto cadastrado ainda.")
         else:
-            # 🔹 Converte a coluna de validade para datetime corretamente
             producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
             producao["data_producao"] = pd.to_datetime(producao["data_producao"], errors="coerce")
-
             hoje = datetime.now().date()
 
-            # 🔹 Calcula dias restantes com segurança
             producao["dias_restantes"] = producao["data_validade"].apply(
                 lambda x: (x.date() - hoje).days if pd.notnull(x) else None
             )
 
-            # 🔹 Define o status conforme a validade
             def status_vencimento(dias):
                 if dias is None:
                     return "❓ Sem data"
@@ -205,18 +225,32 @@ def main_app():
 
             producao["status"] = producao["dias_restantes"].apply(status_vencimento)
 
-            # 🔹 Mostra tabela detalhada
+            # Popups de alerta
+            st.subheader("🔔 Alertas de Validade")
+            alertas = producao[producao["status"].isin(["⚠️ Perto do vencimento", "❌ Vencido"])]
+
+            if alertas.empty:
+                st.success("✅ Nenhum produto perto do vencimento!")
+            else:
+                for _, row in alertas.iterrows():
+                    produto = row["produto"]
+                    cor = row["cor"]
+                    validade = row["data_validade"].strftime("%d/%m/%Y") if pd.notnull(row["data_validade"]) else "Sem data"
+                    status = row["status"]
+                    if "Perto" in status:
+                        st.warning(f"🟠 **{produto} ({cor})** — vence em {row['dias_restantes']} dia(s) ({validade})")
+                    elif "Vencido" in status:
+                        st.error(f"❌ **{produto} ({cor})** — VENCIDO em {validade}")
+
+            # Tabela e métricas
             st.dataframe(
                 producao[["id", "produto", "cor", "data_producao", "data_validade", "dias_restantes", "status"]]
             )
 
-            # 🔹 Mostra métricas no topo
             col1, col2, col3 = st.columns(3)
             total = len(producao)
             vencidos = len(producao[producao["status"].str.contains("Vencido")])
             perto = len(producao[producao["status"].str.contains("Perto")])
-            ativos = total - vencidos - perto
-
             col1.metric("🧁 Total de Produtos", total)
             col2.metric("⚠️ Perto do Vencimento", perto)
             col3.metric("❌ Vencidos", vencidos)
@@ -227,15 +261,11 @@ def main_app():
     elif menu == "📤 Exportar":
         st.header("📤 Exportar Dados do Sistema")
 
-        # Opções de exportação
         aba = st.radio("Escolha o tipo de dado para exportar:", ["Produção", "Desperdício"])
         formato = st.radio("Formato do arquivo:", ["Excel (.xlsx)", "CSV (.csv)"])
-
-        # Mapeia o nome da aba para o nome da tabela correta no Supabase
         tabela = "producao" if aba == "Produção" else "desperdicio"
 
         try:
-            # Busca os dados diretamente do Supabase
             dados = supabase.table(tabela).select("*").execute().data
             df = pd.DataFrame(dados)
         except Exception as e:
@@ -245,36 +275,21 @@ def main_app():
         if df.empty:
             st.warning(f"⚠️ Nenhum dado encontrado na tabela '{tabela}'.")
         else:
-            st.success(f"✅ {len(df)} registros carregados da tabela '{tabela}'.")
-
             nome_arquivo = f"{tabela}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-            # Exportar como Excel
             if formato == "Excel (.xlsx)":
-                from io import BytesIO
                 buffer = BytesIO()
                 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
                     df.to_excel(writer, index=False, sheet_name=tabela.capitalize())
-                st.download_button(
-                    label="📥 Baixar Excel",
-                    data=buffer.getvalue(),
-                    file_name=f"{nome_arquivo}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-            # Exportar como CSV
+                st.download_button("📥 Baixar Excel", data=buffer.getvalue(),
+                                   file_name=f"{nome_arquivo}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             else:
                 csv = df.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    label="📥 Baixar CSV",
-                    data=csv,
-                    file_name=f"{nome_arquivo}.csv",
-                    mime="text/csv"
-                )
-
+                st.download_button("📥 Baixar CSV", data=csv,
+                                   file_name=f"{nome_arquivo}.csv", mime="text/csv")
 
     # ====================================
-    # ZERAR
+    # ZERAR SISTEMA
     # ====================================
     elif menu == "🧹 Zerar Sistema":
         st.header("🧹 Limpar Tabelas")
