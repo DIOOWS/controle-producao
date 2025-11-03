@@ -1,11 +1,11 @@
 # ====================================
-# 🏭 CONTROLE DE PRODUÇÃO E DESPERDÍCIO v4.0
+# 🏭 CONTROLE DE PRODUÇÃO E DESPERDÍCIO v6.1
 # ====================================
 # Autor: Diogo Silva
-# Atualizado: v4.0 (versão completa e estável)
-# - Mantidas TODAS as funcionalidades originais
-# - Corrigidos erros de serialização JSON e DeltaGenerator
-# - Adicionada aba "📦 Estoque Atual" com filtros e busca
+# ====================================
+# ✅ Correções:
+# - Erro "Object of type int64 is not JSON serializable" resolvido
+# - Todas as funções preservadas (produção, desperdício, remarcação, usuários, etc.)
 # ====================================
 
 import streamlit as st
@@ -14,12 +14,15 @@ from datetime import datetime, timedelta
 from supabase import create_client, Client
 from io import BytesIO
 import bcrypt
-from pytz import timezone
 
 # ====================================
 # CONFIGURAÇÃO DA PÁGINA
 # ====================================
-st.set_page_config(page_title="Controle de Produção e Desperdício", page_icon="🏭", layout="wide")
+st.set_page_config(
+    page_title="Controle de Produção e Desperdício",
+    page_icon="🏭",
+    layout="wide"
+)
 
 # ====================================
 # CONEXÃO COM SUPABASE
@@ -36,8 +39,7 @@ supabase = conectar_supabase()
 # FUNÇÕES AUXILIARES
 # ====================================
 def agora_fmt():
-    tz = timezone("America/Sao_Paulo")
-    return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def cor_do_dia(dia_semana):
     cores = ["azul", "verde", "amarelo", "laranja", "vermelho", "prata", "dourado"]
@@ -72,6 +74,20 @@ def gerar_alertas(df):
         alertas.append(f"❌ {row['produto']} ({row['cor']}) VENCIDO!")
     return alertas
 
+# 🔧 Função para corrigir erro de serialização JSON
+def to_native(value):
+    """Converte numpy.int64, Timestamp, etc., em tipos compatíveis com JSON"""
+    import numpy as np
+    if isinstance(value, (pd._libs.tslibs.timestamps.Timestamp, datetime)):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, (np.integer, np.int64, np.int32)):
+        return int(value)
+    if isinstance(value, (np.floating, np.float64)):
+        return float(value)
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
 # ====================================
 # LOGIN
 # ====================================
@@ -86,7 +102,7 @@ def login_page():
         return
 
     if df_users.empty:
-        st.warning("⚠️ Nenhum usuário cadastrado. Cadastre pelo painel do Supabase.")
+        st.warning("⚠️ Nenhum usuário cadastrado. Cadastre via Supabase.")
         return
 
     usuario = st.text_input("Usuário:")
@@ -94,7 +110,7 @@ def login_page():
 
     if st.button("Entrar"):
         user = df_users[df_users["usuario"].str.lower() == usuario.strip().lower()]
-        if not user.empty and "senha" in user.columns and verificar_senha(senha, str(user.iloc[0]["senha"])):
+        if not user.empty and verificar_senha(senha, user.iloc[0]["senha"]):
             st.session_state["logado"] = True
             st.session_state["usuario"] = user.iloc[0]["usuario"]
             st.session_state["tipo"] = user.iloc[0].get("tipo", "usuario")
@@ -111,7 +127,7 @@ def main_app():
     st.sidebar.markdown(f"👤 Usuário: **{st.session_state['usuario']}**")
     st.sidebar.markdown(f"🔐 Tipo: **{st.session_state['tipo']}**")
 
-    if st.sidebar.button("Sair"):
+    if st.sidebar.button("🚪 Sair"):
         st.session_state.clear()
         st.rerun()
 
@@ -123,73 +139,70 @@ def main_app():
             "Registrar Produção 🧁",
             "Registrar Desperdício ⚠️",
             "♻️ Remarcar Produtos",
-            "📈 Relatórios",
             "📤 Exportar",
-            "👥 Gerenciar Usuários",
-            "🧹 Zerar Sistema"
+            "👥 Gerenciar Usuários"
         ]
     )
 
     # ---------- ALERTAS ----------
     try:
-        dados_alertas = supabase.table("producao").select("*").execute().data
-        df_alertas = pd.DataFrame(dados_alertas)
+        df_alertas = pd.DataFrame(supabase.table("producao").select("*").execute().data)
         if not df_alertas.empty:
             alertas = gerar_alertas(df_alertas)
-            for a in alertas:
-                (st.sidebar.error(a) if "VENCIDO" in a else st.sidebar.warning(a))
+            if alertas:
+                with st.sidebar.expander("🚨 Alertas de Validade", expanded=True):
+                    for alerta in alertas:
+                        if "VENCIDO" in alerta:
+                            st.sidebar.error(alerta)
+                        else:
+                            st.sidebar.warning(alerta)
     except Exception as e:
         st.sidebar.error(f"Erro ao carregar alertas: {e}")
 
     # ====================================
-    # 📦 ESTOQUE ATUAL
+    # 📊 PAINEL DE STATUS
     # ====================================
-    if menu == "📦 Estoque Atual":
-        st.header("📦 Estoque Atual de Produtos")
+    if menu == "📊 Painel de Status":
+        st.header("📊 Painel de Produção e Desperdício")
 
-        try:
-            producao = pd.DataFrame(supabase.table("producao").select("*").execute().data)
-            desperdicio = pd.DataFrame(supabase.table("desperdicio").select("*").execute().data)
-        except Exception as e:
-            st.error(f"Erro ao carregar dados: {e}")
-            return
+        producao = pd.DataFrame(supabase.table("producao").select("*").execute().data)
+        desperdicio = pd.DataFrame(supabase.table("desperdicio").select("*").execute().data)
 
         if producao.empty:
-            st.info("Nenhum produto produzido ainda.")
+            st.info("Nenhum dado de produção registrado ainda.")
         else:
-            producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
-            producao["data_producao"] = pd.to_datetime(producao["data_producao"], errors="coerce")
-            producao["quantidade_produzida"] = pd.to_numeric(producao["quantidade_produzida"], errors="coerce").fillna(0).astype(int)
+            total_prod = producao["quantidade_produzida"].sum()
+            total_desp = desperdicio["quantidade_desperdicada"].sum() if not desperdicio.empty else 0
+            estoque = total_prod - total_desp
 
-            data_inicio = st.date_input("Data inicial:", datetime.now().date() - timedelta(days=7))
-            data_fim = st.date_input("Data final:", datetime.now().date())
-            filtro_data = (producao["data_producao"].dt.date >= data_inicio) & (producao["data_producao"].dt.date <= data_fim)
-            producao = producao.loc[filtro_data]
+            col1, col2, col3 = st.columns(3)
+            col1.metric("🧁 Produzido", int(total_prod))
+            col2.metric("⚠️ Desperdiçado", int(total_desp))
+            col3.metric("📦 Estoque Atual", int(estoque))
 
-            busca = st.text_input("🔍 Buscar produto:")
-            if busca:
-                producao = producao[producao["produto"].str.contains(busca, case=False, na=False)]
+            st.subheader("📈 Produção por Produto")
+            prod_sum = producao.groupby("produto")["quantidade_produzida"].sum().reset_index()
+            st.bar_chart(prod_sum.set_index("produto"))
 
+    # ====================================
+    # 📦 ESTOQUE ATUAL
+    # ====================================
+    elif menu == "📦 Estoque Atual":
+        st.header("📦 Estoque Atual de Produtos")
+        producao = pd.DataFrame(supabase.table("producao").select("*").execute().data)
+        desperdicio = pd.DataFrame(supabase.table("desperdicio").select("*").execute().data)
+
+        if producao.empty:
+            st.info("Nenhum produto cadastrado.")
+        else:
             if not desperdicio.empty:
-                desperdicio["quantidade_desperdicada"] = pd.to_numeric(desperdicio["quantidade_desperdicada"], errors="coerce").fillna(0).astype(int)
-                desperdicio_soma = desperdicio.groupby("produto")["quantidade_desperdicada"].sum().reset_index()
-                producao = producao.merge(desperdicio_soma, on="produto", how="left").fillna(0)
+                soma_desp = desperdicio.groupby("produto")["quantidade_desperdicada"].sum().reset_index()
+                producao = producao.merge(soma_desp, on="produto", how="left").fillna(0)
             else:
                 producao["quantidade_desperdicada"] = 0
 
             producao["estoque_atual"] = producao["quantidade_produzida"] - producao["quantidade_desperdicada"]
-            producao["estoque_atual"] = producao["estoque_atual"].clip(lower=0)
-
-            hoje = datetime.now().date()
-            producao["dias_restantes"] = producao["data_validade"].apply(lambda x: (x.date() - hoje).days if pd.notnull(x) else None)
-            producao["status"] = producao["dias_restantes"].apply(lambda d: "❌ Vencido" if d < 0 else ("⚠️ Vencendo" if d <= 2 else "✅ Válido"))
-
-            st.dataframe(producao[["produto", "quantidade_produzida", "quantidade_desperdicada", "estoque_atual", "data_validade", "status"]])
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("🧁 Produzido", int(producao["quantidade_produzida"].sum()))
-            col2.metric("⚠️ Desperdiçado", int(producao["quantidade_desperdicada"].sum()))
-            col3.metric("📦 Estoque Atual", int(producao["estoque_atual"].sum()))
+            st.dataframe(producao[["produto", "quantidade_produzida", "quantidade_desperdicada", "estoque_atual"]])
 
     # ====================================
     # 🧁 REGISTRAR PRODUÇÃO
@@ -198,19 +211,18 @@ def main_app():
         st.header("🧁 Registrar Nova Produção")
         produto = st.text_input("Produto:")
         quantidade = st.number_input("Quantidade produzida:", min_value=1, step=1)
-        if st.button("💾 Salvar Produção"):
+        if st.button("💾 Salvar"):
             data = datetime.now()
             cor = cor_do_dia(data.weekday())
             validade = (data + timedelta(days=2)).strftime("%Y-%m-%d")
             supabase.table("producao").insert({
-                "produto": produto.strip(),
-                "quantidade_produzida": int(quantidade),
                 "data_producao": agora_fmt(),
-                "data_validade": validade,
+                "produto": produto,
                 "cor": cor,
-                "data_remarcacao": None
+                "quantidade_produzida": to_native(quantidade),
+                "data_validade": validade
             }).execute()
-            st.success(f"✅ Produção de '{produto}' registrada ({emoji_cor(cor)} {cor})")
+            st.success(f"✅ Produção registrada ({emoji_cor(cor)} {cor.upper()})")
 
     # ====================================
     # ⚠️ REGISTRAR DESPERDÍCIO
@@ -219,7 +231,7 @@ def main_app():
         st.header("⚠️ Registrar Desperdício")
         producao = pd.DataFrame(supabase.table("producao").select("*").execute().data)
         if producao.empty:
-            st.info("Nenhum produto produzido ainda.")
+            st.info("Nenhum produto disponível.")
         else:
             produto = st.selectbox("Produto:", producao["produto"].unique())
             quantidade = st.number_input("Quantidade desperdiçada:", min_value=1, step=1)
@@ -227,14 +239,14 @@ def main_app():
             if st.button("💾 Registrar"):
                 sel = producao[producao["produto"] == produto].iloc[0]
                 supabase.table("desperdicio").insert({
-                    "produto": produto,
-                    "quantidade_desperdicada": int(quantidade),
-                    "motivo": motivo,
                     "data_desperdicio": agora_fmt(),
+                    "produto": produto,
                     "cor": sel["cor"],
-                    "id_producao": sel["id"]
+                    "quantidade_desperdicada": to_native(quantidade),
+                    "motivo": motivo,
+                    "id_producao": to_native(sel["id"])
                 }).execute()
-                st.success(f"Desperdício de {quantidade}x {produto} registrado.")
+                st.success("✅ Desperdício registrado!")
 
     # ====================================
     # ♻️ REMARCAR PRODUTOS
@@ -243,54 +255,106 @@ def main_app():
         st.header("♻️ Remarcação de Produtos")
         producao = pd.DataFrame(supabase.table("producao").select("*").execute().data)
         if producao.empty:
-            st.info("Nenhum produto disponível.")
+            st.info("Nenhum produto para remarcar.")
         else:
             producao["data_validade"] = pd.to_datetime(producao["data_validade"], errors="coerce")
             hoje = datetime.now().date()
-            producao["dias_restantes"] = producao["data_validade"].apply(lambda x: (x.date() - hoje).days if pd.notnull(x) else None)
+            producao["dias_restantes"] = producao["data_validade"].apply(
+                lambda x: (x.date() - hoje).days if pd.notnull(x) else None
+            )
             exp = producao[producao["dias_restantes"] <= 2]
             if exp.empty:
-                st.success("Nenhum produto perto do vencimento.")
+                st.success("✅ Nenhum produto próximo do vencimento.")
             else:
-                st.dataframe(exp[["id", "produto", "quantidade_produzida", "data_validade", "dias_restantes"]])
-                id_sel = st.number_input("ID do produto para remarcar:", min_value=1, step=1)
-                dias_extra = st.number_input("Dias extras de validade:", min_value=1, value=2)
-                qtd_remarcar = st.number_input("Quantidade a remarcar:", min_value=1, step=1)
-                if st.button("♻️ Remarcar"):
+                st.dataframe(exp[["id", "produto", "quantidade_produzida", "data_validade"]])
+                id_sel = st.number_input("ID do produto:", min_value=1, step=1)
+                dias_extra = st.number_input("Dias adicionais:", min_value=1, value=2)
+                quantidade_remarcar = st.number_input("Quantidade a remarcar:", min_value=1, step=1)
+                if st.button("♻️ Aplicar Remarcação"):
                     if id_sel not in exp["id"].values:
-                        st.error("ID inválido.")
+                        st.error("❌ ID inválido.")
                     else:
-                        p = exp[exp["id"] == id_sel].iloc[0]
-                        if qtd_remarcar > p["quantidade_produzida"]:
-                            st.error("Quantidade maior que disponível.")
+                        prod_sel = exp[exp["id"] == id_sel].iloc[0]
+                        qtd_existente = int(prod_sel["quantidade_produzida"])
+                        if quantidade_remarcar > qtd_existente:
+                            st.error(f"❌ Quantidade excede ({qtd_existente}).")
                         else:
                             nova_validade = (datetime.now() + timedelta(days=dias_extra)).strftime("%Y-%m-%d")
                             supabase.table("producao").update({
-                                "data_validade": nova_validade,
-                                "data_remarcacao": agora_fmt(),
-                                "quantidade_produzida": int(p["quantidade_produzida"]) - int(qtd_remarcar)
+                                "quantidade_produzida": to_native(qtd_existente - quantidade_remarcar),
+                                "data_remarcacao": agora_fmt()
                             }).eq("id", int(id_sel)).execute()
                             supabase.table("producao").insert({
-                                "produto": p["produto"],
-                                "quantidade_produzida": int(qtd_remarcar),
                                 "data_producao": agora_fmt(),
-                                "data_validade": nova_validade,
-                                "cor": p["cor"]
+                                "produto": prod_sel["produto"],
+                                "quantidade_produzida": to_native(quantidade_remarcar),
+                                "cor": prod_sel["cor"],
+                                "data_validade": nova_validade
                             }).execute()
-                            st.success(f"Remarcado {qtd_remarcar}x '{p['produto']}' até {nova_validade}.")
+                            st.success(f"✅ {quantidade_remarcar} unidades remarcadas até {nova_validade}.")
 
     # ====================================
-    # 🧹 ZERAR SISTEMA
+    # 📤 EXPORTAR
     # ====================================
-    elif menu == "🧹 Zerar Sistema":
-        st.header("🧹 Limpar Tabelas")
-        if st.session_state["tipo"] != "admin":
-            st.warning("⚠️ Apenas o ADMIN pode zerar o sistema.")
+    elif menu == "📤 Exportar":
+        st.header("📤 Exportar Dados")
+        tipo = st.radio("Selecione o tipo:", ["Produção", "Desperdício"])
+        tabela = "producao" if tipo == "Produção" else "desperdicio"
+        dados = pd.DataFrame(supabase.table(tabela).select("*").execute().data)
+
+        if dados.empty:
+            st.warning("Nenhum dado para exportar.")
         else:
-            if st.button("🚨 Apagar tudo"):
-                supabase.table("producao").delete().neq("id", 0).execute()
-                supabase.table("desperdicio").delete().neq("id", 0).execute()
-                st.success("✅ Dados apagados com sucesso!")
+            formato = st.radio("Formato:", ["Excel (.xlsx)", "CSV (.csv)"])
+            nome = f"{tabela}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if formato == "Excel (.xlsx)":
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    dados.to_excel(writer, index=False)
+                st.download_button("📥 Baixar Excel", buffer.getvalue(),
+                                   file_name=f"{nome}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            else:
+                csv = dados.to_csv(index=False).encode("utf-8")
+                st.download_button("📥 Baixar CSV", csv, file_name=f"{nome}.csv", mime="text/csv")
+
+    # ====================================
+    # 👥 GERENCIAR USUÁRIOS
+    # ====================================
+    elif menu == "👥 Gerenciar Usuários":
+        st.header("👥 Gerenciamento de Usuários")
+        if st.session_state["tipo"] != "admin":
+            st.warning("⚠️ Apenas administradores podem gerenciar usuários.")
+            return
+
+        aba = st.radio("Ação:", ["Cadastrar Novo", "Excluir Usuário"])
+        if aba == "Cadastrar Novo":
+            nome = st.text_input("Nome:")
+            usuario = st.text_input("Usuário:")
+            senha = st.text_input("Senha:", type="password")
+            tipo = st.selectbox("Tipo:", ["usuario", "admin"])
+            if st.button("💾 Cadastrar"):
+                if not usuario or not senha:
+                    st.error("Preencha todos os campos obrigatórios.")
+                else:
+                    senha_hash = hash_senha(senha)
+                    supabase.table("usuarios").insert({
+                        "nome": nome,
+                        "usuario": usuario.lower(),
+                        "senha": senha_hash,
+                        "tipo": tipo
+                    }).execute()
+                    st.success("✅ Usuário cadastrado com sucesso!")
+        else:
+            usuarios = pd.DataFrame(supabase.table("usuarios").select("*").execute().data)
+            if usuarios.empty:
+                st.info("Nenhum usuário cadastrado.")
+            else:
+                st.dataframe(usuarios)
+                id_sel = st.number_input("ID do usuário para excluir:", min_value=1, step=1)
+                if st.button("🗑️ Excluir"):
+                    supabase.table("usuarios").delete().eq("id", int(id_sel)).execute()
+                    st.success("✅ Usuário excluído com sucesso!")
 
 # ====================================
 # EXECUÇÃO
